@@ -473,3 +473,178 @@
     .r-ident__row { flex-direction: column; align-items: stretch; gap: 0.25rem; }
     .r-ident__label { min-width: 0; }
 }
+
+/* ── Reticulum Messages card (Phase 2 #3) ────────────────────── */
+.rns-msgs {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+    min-height: 320px;
+    max-height: 520px;
+}
+.rns-msgs__list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.rns-msgs__list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.45rem 0.6rem;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.rns-msgs__list-title { font-weight: 600; }
+.rns-msgs__newbtn { padding: 0.2rem 0.55rem; font-size: 0.7rem; }
+.rns-msgs__convos { flex: 1; overflow-y: auto; }
+.rns-msgs__empty {
+    padding: 1rem;
+    text-align: center;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.45);
+}
+.rns-msgs__convo {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.rns-msgs__convo:hover { background: rgba(255,255,255,0.04); }
+.rns-msgs__convo--sel { background: rgba(80, 180, 255, 0.10); }
+.rns-msgs__convo-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.15rem;
+}
+.rns-msgs__convo-peer {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.72rem;
+}
+.rns-msgs__convo-time {
+    font-size: 0.65rem;
+    color: rgba(255,255,255,0.45);
+    white-space: nowrap;
+}
+.rns-msgs__convo-preview {
+    font-size: 0.74rem;
+    color: rgba(255,255,255,0.65);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.rns-msgs__convo-dir {
+    color: rgba(80, 180, 255, 0.75);
+    margin-right: 0.25rem;
+}
+.rns-msgs__thread {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.rns-msgs__thread-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.7rem;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.rns-msgs__thread-peer {
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.7);
+}
+.rns-msgs__thread-hash {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    color: rgba(80, 180, 255, 0.9);
+}
+.rns-msgs__thread-count {
+    font-size: 0.7rem;
+    color: rgba(255,255,255,0.45);
+}
+.rns-msgs__placeholder {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 1.5rem;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.8rem;
+}
+.rns-msgs__bubbles {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+.rns-msgs__bubble {
+    max-width: 75%;
+    padding: 0.45rem 0.65rem;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    line-height: 1.35;
+    word-wrap: break-word;
+}
+.rns-msgs__bubble--in {
+    align-self: flex-start;
+    background: rgba(255,255,255,0.07);
+}
+.rns-msgs__bubble--out {
+    align-self: flex-end;
+    background: rgba(80, 180, 255, 0.18);
+}
+.rns-msgs__bubble-title {
+    font-weight: 600;
+    font-size: 0.75rem;
+    margin-bottom: 0.2rem;
+    color: rgba(255,255,255,0.85);
+}
+.rns-msgs__bubble-body { white-space: pre-wrap; }
+.rns-msgs__bubble-meta {
+    margin-top: 0.25rem;
+    font-size: 0.62rem;
+    color: rgba(255,255,255,0.45);
+    text-align: right;
+}
+.rns-msgs__compose,
+.rns-msgs__newform {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.5rem 0.6rem;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02);
+}
+.rns-msgs__body {
+    font-family: inherit;
+    resize: vertical;
+    min-height: 2.5rem;
+}
+.rns-msgs__newactions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+@media (max-width: 700px) {
+    .rns-msgs {
+        grid-template-columns: 1fr;
+        max-height: none;
+    }
+    .rns-msgs__list { max-height: 200px; }
+    .rns-msgs__thread { min-height: 280px; }
+    .rns-msgs__bubble { max-width: 90%; }
+}

@@ -81,6 +81,7 @@ class RadioSettings {
                     <div id="rns-card-config"></div>
                     <div id="rns-card-announce"></div>
                     <div id="rns-card-destinations"></div>
+                    <div id="rns-card-messages"></div>
 
                     <div class="r-console-foot">
                         <span class="r-console-foot__hint">
@@ -147,6 +148,13 @@ class RadioSettings {
         const rnsDest = new RnsDestinationsCard(api);
         rnsDest.mount(document.getElementById('rns-card-destinations'));
         this._cards.push(rnsDest);
+
+        // Phase 2 #3: LXMF inbox + send. Lives below destinations
+        // because operators usually want to know "who's heard" before
+        // composing a message to a hash.
+        const rnsMessages = new RnsMessagesCard(api);
+        rnsMessages.mount(document.getElementById('rns-card-messages'));
+        this._cards.push(rnsMessages);
     }
 
     _buildApi() {

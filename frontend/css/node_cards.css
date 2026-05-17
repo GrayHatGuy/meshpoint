@@ -99,6 +99,16 @@
     color: var(--accent-purple);
 }
 
+/* Phase 1 #1b: Reticulum badge in the side-panel node cards. Cyan
+   matches the LXMF blue palette used for the .rns-class--lxmf pill
+   on the Reticulum cards, so operators have a consistent "this is
+   the Reticulum stack" colour story across the Dashboard, Radio,
+   and Messages tabs. */
+.nc-proto--reticulum {
+    background: rgba(80, 180, 255, 0.15);
+    color: rgba(160, 220, 255, 0.95);
+}
+
 /* ---- Card Rows ---- */
 
 .nc-card__row {

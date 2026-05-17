@@ -575,13 +575,17 @@ async def get_inbox(limit: int = 500) -> dict:
     }
 
 
-def _read_peers_enrichment() -> dict:
+def read_peers_enrichment() -> dict:
     """Return the {hash: {display_name, class, is_lxmf, ...}} map
     from lxmf_peers.json.
 
     Returns {} on any error so endpoints degrade gracefully -- a
     missing/broken enrichment file just means the API serves
     hashes without display_names, never 500s.
+
+    Public because other route modules (notably nodes.py for the
+    Dashboard side panel) need to apply the same hash->name
+    substitution to non-Reticulum-specific endpoints.
     """
     try:
         with _PEERS_JSON.open("r", encoding="utf-8") as f:
@@ -591,6 +595,11 @@ def _read_peers_enrichment() -> dict:
     except (OSError, json.JSONDecodeError) as exc:
         logger.debug("lxmf_peers.json read failed: %s", exc)
         return {}
+
+
+# Back-compat alias for in-module callers that still reference the
+# underscore-prefixed name. Remove on the next clean-up pass.
+_read_peers_enrichment = read_peers_enrichment
 
 
 def _read_inbox_json() -> list[dict]:

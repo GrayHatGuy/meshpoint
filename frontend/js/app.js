@@ -52,6 +52,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         _incrementPacketCount();
     });
 
+    // Phase 1 #1b: when the sidecar publishes a fresh
+    // lxmf_peers.json (newly-classified peer, updated display name)
+    // the server broadcasts "lxmf_inbox_changed". Trigger an
+    // immediate node refresh so the side-panel cards pick up the
+    // new display names + RNS class badges without waiting for the
+    // 15s poll. Cheap -- /api/nodes is a single SQLite query plus
+    // a small JSON merge.
+    window.concentratorWS.on('lxmf_inbox_changed', () => {
+        _refreshData(nodeMap, nodeCards, packetFeed);
+    });
+
     _setupTabs();
 
     window.concentratorWS.connect();

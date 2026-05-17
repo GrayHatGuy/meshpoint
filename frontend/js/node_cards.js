@@ -84,7 +84,22 @@ class NodeCards {
         const shortLabel = this._esc(n.short_name || (n.node_id || '').slice(-4)).toUpperCase();
         const avatarColor = this._hashColor(n.node_id || '');
         const proto = n.protocol || 'meshtastic';
-        const protoBadge = proto === 'meshcore' ? 'MC' : 'MT';
+        // Phase 1 #1b: dedicated RNS badge so Reticulum nodes don't
+        // masquerade as Meshtastic. peer_class (lxmf / relay /
+        // propagation / transport / rns_service) comes from the
+        // enrichment join in /api/nodes; we suffix it to RNS so
+        // operators can spot relays/propagation nodes among LXMF
+        // correspondents at a glance.
+        let protoBadge;
+        if (proto === 'meshcore') {
+            protoBadge = 'MC';
+        } else if (proto === 'reticulum') {
+            const cls = n.peer_class || 'unknown';
+            protoBadge = (cls === 'unknown' || cls === 'lxmf')
+                ? 'RNS' : `RNS·${cls}`;
+        } else {
+            protoBadge = 'MT';
+        }
         const online = this._isOnline(n.last_heard);
         const onlineDot = online
             ? '<span class="nc-online nc-online--on" title="Online"></span>'

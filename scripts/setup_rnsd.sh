@@ -134,6 +134,23 @@ else
     warn "Meshpoint local.yaml not found at $MESHPOINT_LOCAL; skipping auto-detect disable"
 fi
 
+# ── 5a. Grant meshpoint user access to systemd journals ─────────────
+# Meshpoint's /api/reticulum/* shim greps `journalctl -u rnsd` /
+# `journalctl -u lxmd` to extract identity + announce data. By default
+# only adm and systemd-journal group members can read other users'
+# unit journals.
+if id -u meshpoint >/dev/null 2>&1; then
+    if id -nG meshpoint | tr ' ' '\n' | grep -qx systemd-journal; then
+        info "meshpoint already in systemd-journal group"
+    else
+        info "Adding meshpoint to systemd-journal group (for /api/reticulum/* journal reads)"
+        sudo usermod -aG systemd-journal meshpoint
+        info "Meshpoint will need a restart to inherit the new group"
+    fi
+else
+    warn "meshpoint user not found -- skipping journal group grant"
+fi
+
 # ── 5b. Make rnsd/lxmd artifacts readable by the meshpoint user ──────
 # Meshpoint's /api/reticulum/* shim needs to read the lxmd config and
 # execute rnstatus from the rnsd user's $HOME. On stock Raspbian /home

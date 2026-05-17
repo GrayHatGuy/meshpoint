@@ -10,6 +10,13 @@ Type=simple
 # usernames and Python install layouts (user pip vs venv vs system).
 User=__USER__
 Group=__USER__
+# Without PYTHONUNBUFFERED, rnsd/lxmd's stdout is block-buffered when
+# piped to systemd-journald and [Notice] lines stay invisible until
+# the buffer fills or the process exits. With it set, every log line
+# appears in `journalctl -u rnsd` immediately, which is essential for
+# diagnostics AND for Meshpoint's /api/reticulum/identity shim that
+# greps the journal for "LXMF Router ready to receive on <hash>".
+Environment=PYTHONUNBUFFERED=1
 ExecStart=__EXEC__
 
 Restart=on-failure

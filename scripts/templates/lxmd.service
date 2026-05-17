@@ -14,6 +14,11 @@ Type=simple
 # during install -- see the matching note in rnsd.service.
 User=__USER__
 Group=__USER__
+# See the matching note in rnsd.service. Without this, lxmd's
+# "LXMF Router ready to receive on <hash>" line is invisible to
+# `journalctl -u lxmd` until the process exits, which makes the
+# Meshpoint /api/reticulum/identity endpoint return null address.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=__EXEC__
 
 Restart=on-failure

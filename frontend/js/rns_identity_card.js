@@ -1,21 +1,26 @@
 /**
- * Radio tab - Reticulum Identity card (STUB).
+ * Radio tab - Reticulum Identity card.
  *
- * Mirrors the Meshtastic identity card layout but is read-only / stub
- * pending Tier 2 work that gives the Pi a real Reticulum identity
- * (Ed25519 + X25519 keypair persisted to data/reticulum/identity).
+ * Live in Phase 2: fetches the LXMF address and display name from
+ * the rnsd+lxmd stack (separate process, owned by the Pi's login
+ * user, talked to via /api/reticulum/identity).
  *
- * Until Tier 2 lands, this card shows:
- *   - Display Name: from config.transmit.long_name (operator-visible
- *     name; will be the LXMF display name once a real identity exists)
- *   - Destination Hash: "--" (no identity yet, so no hash to show)
- *   - LXMF Address: "--" (LXMF requires an identity)
- *   - A clear "Tier 2 required" notice
+ * Fields:
+ *   - Display Name: lxmd config's [lxmf] display_name. Read-only here;
+ *     edit ~/.lxmd/config and restart lxmd.
+ *   - LXMF Address: the hash other Reticulum users send messages to.
+ *     This is lxmd's delivery destination, NOT the RNS transport
+ *     identity. Click to copy.
+ *   - Status lamp: rnsd / lxmd liveness from systemctl.
+ *
+ * Falls back to a STUB state if /api/reticulum/identity returns no
+ * data (rnsd/lxmd not installed, journal unreadable, etc.).
  */
 class RnsIdentityCard {
     constructor(api) {
         this._api = api;
         this._root = null;
+        this._refreshTimer = null;
     }
 
     mount(rootEl) {
@@ -24,45 +29,105 @@ class RnsIdentityCard {
         rootEl.innerHTML = `
             <div class="r-card__header">
                 <h3 class="r-card__title">Identity</h3>
-                <span class="r-badge r-badge--mono r-badge--muted"
-                      id="rns-ident-source">STUB</span>
+                <span class="r-badge r-badge--mono"
+                      id="rns-ident-source">--</span>
             </div>
             <div class="r-ident">
                 <div class="r-ident__row">
                     <label class="r-ident__label" for="rns-display-name">Display Name</label>
                     <input class="r-input" id="rns-display-name"
-                           maxlength="36"
-                           placeholder="Meshpoint" disabled />
-                </div>
-                <div class="r-ident__row">
-                    <label class="r-ident__label" for="rns-dest-hash">Dest Hash</label>
-                    <input class="r-input r-input--mono" id="rns-dest-hash"
-                           placeholder="-- (Tier 2)" disabled />
+                           placeholder="(not configured)" readonly />
                 </div>
                 <div class="r-ident__row">
                     <label class="r-ident__label" for="rns-lxmf-addr">LXMF Addr</label>
                     <input class="r-input r-input--mono" id="rns-lxmf-addr"
-                           placeholder="-- (Tier 2)" disabled />
+                           placeholder="(rnsd/lxmd not detected)"
+                           readonly title="Click to copy" />
                 </div>
                 <div class="r-ident__hint" id="rns-ident-hint">
-                    Reticulum identity (Ed25519 + X25519 keypair) and LXMF
-                    address are not yet provisioned. Tier 2 will generate
-                    and persist a keypair to data/reticulum/identity, after
-                    which this Meshpoint becomes a full Reticulum node with
-                    its own discoverable address.
+                    Loading...
                 </div>
             </div>
-            <div class="r-card__actions">
-                <button class="r-btn r-btn--primary"
-                        id="rns-save-identity" disabled
-                        title="Available in Tier 2">Save Identity</button>
-            </div>
         `;
+        this._wire();
     }
 
-    render(config) {
-        const tx = config.transmit || {};
-        this._root.querySelector('#rns-display-name').value = tx.long_name || '';
+    render(_config) {
+        // Initial fetch + start periodic refresh (every 30 sec, like other cards)
+        this._fetchAndRender();
+        if (this._refreshTimer) clearInterval(this._refreshTimer);
+        this._refreshTimer = setInterval(() => this._fetchAndRender(), 30_000);
+    }
+
+    _wire() {
+        const addrInput = this._root.querySelector('#rns-lxmf-addr');
+        addrInput.addEventListener('click', () => {
+            if (!addrInput.value) return;
+            navigator.clipboard.writeText(addrInput.value).then(
+                () => this._api.toast('LXMF address copied'),
+                () => {},
+            );
+        });
+    }
+
+    async _fetchAndRender() {
+        try {
+            const res = await fetch('/api/reticulum/identity');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            this._applyState(data);
+        } catch (e) {
+            this._applyStubState(e.message);
+        }
+    }
+
+    _applyState(data) {
+        const badge = this._root.querySelector('#rns-ident-source');
+        const nameInput = this._root.querySelector('#rns-display-name');
+        const addrInput = this._root.querySelector('#rns-lxmf-addr');
+        const hint = this._root.querySelector('#rns-ident-hint');
+
+        const hasAddress = !!data.address;
+        const bothRunning = data.rnsd_running && data.lxmd_running;
+
+        if (hasAddress && bothRunning) {
+            badge.textContent = 'LIVE';
+            badge.classList.remove('r-badge--muted');
+        } else if (hasAddress) {
+            badge.textContent = 'STALE';
+            badge.classList.add('r-badge--muted');
+        } else {
+            badge.textContent = 'OFFLINE';
+            badge.classList.add('r-badge--muted');
+        }
+
+        nameInput.value = data.display_name || '';
+        addrInput.value = data.address ? `<${data.address}>` : '';
+        hint.textContent = this._statusHint(data);
+    }
+
+    _applyStubState(errMsg) {
+        const badge = this._root.querySelector('#rns-ident-source');
+        const nameInput = this._root.querySelector('#rns-display-name');
+        const addrInput = this._root.querySelector('#rns-lxmf-addr');
+        const hint = this._root.querySelector('#rns-ident-hint');
+
+        badge.textContent = 'STUB';
+        badge.classList.add('r-badge--muted');
+        nameInput.value = '';
+        addrInput.value = '';
+        hint.textContent = `Reticulum stack not detected. `
+            + `Install via scripts/setup_rnsd.sh and reload. (${errMsg})`;
+    }
+
+    _statusHint(data) {
+        const parts = [];
+        parts.push(data.rnsd_running ? 'rnsd: running' : 'rnsd: stopped');
+        parts.push(data.lxmd_running ? 'lxmd: running' : 'lxmd: stopped');
+        if (data.address) {
+            parts.push('click address to copy');
+        }
+        return parts.join(' · ');
     }
 }
 

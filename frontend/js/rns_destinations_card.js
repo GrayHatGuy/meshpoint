@@ -32,7 +32,7 @@ class RnsDestinationsCard {
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Name</th>
+                        <th>Route</th>
                         <th>Destination Hash</th>
                         <th>Last Heard</th>
                         <th>RSSI</th>
@@ -71,67 +71,83 @@ class RnsDestinationsCard {
     async _loadPeers() {
         const body = this._root.querySelector('#rns-dest-body');
         const subtitle = this._root.querySelector('#rns-dest-subtitle');
+        await this._refreshLocalRow();
         const localRow = this._renderLocalRow();
 
         try {
-            // /api/nodes returns all protocols (the backend's protocol query
-            // param is currently ignored). Filter client-side so this card
-            // only shows Reticulum destinations, not MT/MC nodes.
-            const res = await fetch('/api/nodes?limit=500');
+            // /api/reticulum/peers returns LXMF-aware peers parsed from
+            // rnsd's announce log. Each entry has hash, hops, RSSI, SNR,
+            // last_heard, and via-relay info -- much richer than the
+            // generic /api/nodes view we used in the stub version.
+            const res = await fetch('/api/reticulum/peers?limit=50');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            const all = Array.isArray(data) ? data : (data.nodes || []);
+            const peers = data.peers || [];
 
-            const peers = all.filter(
-                (n) => (n.protocol || '').toLowerCase() === 'reticulum',
-            );
-            // Sort by most-recently-heard first.
-            peers.sort((a, b) => {
-                const ta = a.last_heard ? Date.parse(a.last_heard) : 0;
-                const tb = b.last_heard ? Date.parse(b.last_heard) : 0;
-                return tb - ta;
-            });
-
-            const peerRows = peers.map((n, i) => this._peerRow(n, i + 1)).join('');
+            const peerRows = peers.map((p, i) => this._peerRow(p, i + 1)).join('');
             body.innerHTML = localRow + peerRows;
             subtitle.textContent = `${peers.length} peer(s) heard`;
         } catch (e) {
             body.innerHTML = localRow + `
                 <tr><td colspan="5" class="ch-table__hash">
-                    No peer data yet. Reticulum nodes appear here as their
-                    ANNOUNCE frames are received.
+                    rnsd peer list unavailable (${this._esc(e.message)}).
+                    Install via scripts/setup_rnsd.sh to activate.
                 </td></tr>
             `;
-            subtitle.textContent = 'no peers';
+            subtitle.textContent = 'rnsd offline';
         }
     }
 
     _renderLocalRow() {
-        // Stub local-identity row. Reticulum hash = "--" until Tier 2.
+        // Local-identity row. Hash populated asynchronously from
+        // /api/reticulum/identity (see _refreshLocalRow). If the identity
+        // hasn't been fetched yet, show a placeholder; subsequent
+        // refresh ticks will replace it.
+        const addr = this._localAddress
+            ? this._esc(this._localAddress.slice(0, 16) + '…')
+            : '(loading...)';
+        const title = this._localAddress ? this._esc(this._localAddress) : '';
         return `
             <tr class="ch-table__row" data-local="1">
                 <td class="ch-table__idx">0</td>
                 <td><em>(this Meshpoint)</em></td>
-                <td class="ch-table__hash">-- (Tier 2)</td>
+                <td class="ch-table__hash" title="${title}">${addr}</td>
                 <td>--</td>
                 <td>--</td>
             </tr>
         `;
     }
 
-    _peerRow(node, idx) {
-        const name = node.long_name || node.short_name || '';
-        const hash = node.node_id || '--';
-        const lastHeard = this._fmtTime(node.last_heard);
-        const rssi = (node.signal && node.signal.rssi !== undefined)
-            ? `${node.signal.rssi.toFixed(1)} dBm`
+    async _refreshLocalRow() {
+        try {
+            const res = await fetch('/api/reticulum/identity');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            this._localAddress = data.address || null;
+        } catch (e) {
+            this._localAddress = null;
+        }
+    }
+
+    _peerRow(peer, idx) {
+        // Peer shape from /api/reticulum/peers:
+        //   { hash, hops, via, interface, last_heard, rssi, snr }
+        // Reticulum announces don't carry a friendly name in the air
+        // protocol (display names live at the LXMF layer above), so we
+        // show the hops/via column as the "name" surrogate instead.
+        const hash = peer.hash || '--';
+        const hops = peer.hops != null ? `${peer.hops} hop${peer.hops === 1 ? '' : 's'}` : '';
+        const viaTag = peer.via ? ` via ${peer.via.slice(0, 8)}…` : '';
+        const lastHeard = this._fmtTime(peer.last_heard);
+        const rssi = (peer.rssi != null)
+            ? `${peer.rssi.toFixed(1)} dBm`
             : '--';
         return `
             <tr class="ch-table__row">
                 <td class="ch-table__idx">${idx}</td>
-                <td>${this._esc(name) || '<em>unknown</em>'}</td>
+                <td>${this._esc(hops + viaTag) || '<em>unknown</em>'}</td>
                 <td class="ch-table__hash" title="${this._esc(hash)}">
-                    ${this._esc(hash.length > 16 ? hash.slice(0, 16) + '...' : hash)}
+                    ${this._esc(hash.length > 16 ? hash.slice(0, 16) + '…' : hash)}
                 </td>
                 <td>${lastHeard}</td>
                 <td>${rssi}</td>

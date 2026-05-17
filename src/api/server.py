@@ -11,7 +11,7 @@ from src._so_compat_check import warn_if_stale_so_files
 from src.analytics.network_mapper import NetworkMapper
 from src.analytics.signal_analyzer import SignalAnalyzer
 from src.analytics.traffic_monitor import TrafficMonitor
-from src.api.routes import analytics, config_routes, device, messages, nodeinfo_routes, nodes, packets, stats_routes, system_metrics, telemetry, update_check
+from src.api.routes import analytics, config_routes, device, messages, nodeinfo_routes, nodes, packets, reticulum, stats_routes, system_metrics, telemetry, update_check
 from src.api.upstream_client import UpstreamClient
 from src.api.websocket_manager import WebSocketManager
 from src.config import AppConfig, load_config, validate_activation
@@ -116,6 +116,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(nodeinfo_routes.router)
     app.include_router(config_routes.router)
     app.include_router(stats_routes.router)
+    app.include_router(reticulum.router)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

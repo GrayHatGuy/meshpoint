@@ -86,6 +86,9 @@ class RnsConfigCard {
                 Edit there and restart to change. A future revision will
                 make this panel writable.
             </p>
+            <p class="r-hint" id="rns-config-stack-status">
+                Messaging stack: <span id="rns-stack-state">unknown</span>
+            </p>
         `;
     }
 
@@ -133,6 +136,26 @@ class RnsConfigCard {
 
         const subtitle = this._root.querySelector('#rns-config-subtitle');
         subtitle.textContent = `${freqMhz} MHz / SF${sf} / BW${bwKhz}`;
+
+        // Phase 2 addition: also reflect rnsd/lxmd liveness so the
+        // operator can see at a glance whether messaging is alive.
+        this._refreshStackState();
+    }
+
+    async _refreshStackState() {
+        const el = this._root.querySelector('#rns-stack-state');
+        if (!el) return;
+        try {
+            const res = await fetch('/api/reticulum/status');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const rnsd = data.rnsd_running ? 'rnsd up' : 'rnsd down';
+            const lxmd = data.lxmd_running ? 'lxmd up' : 'lxmd down';
+            const ifaces = (data.interfaces || []).length;
+            el.textContent = `${rnsd} · ${lxmd} · ${ifaces} interface(s)`;
+        } catch (e) {
+            el.textContent = 'not detected (rnsd/lxmd not installed)';
+        }
     }
 }
 

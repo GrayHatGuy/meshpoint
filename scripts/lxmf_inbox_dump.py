@@ -387,10 +387,14 @@ def _collect_candidate_hashes() -> list:
         except OSError as exc:
             logger.debug("announce cache iter failed: %s", exc)
 
-    # Journal scrape: the same regex used to find via-relays also
-    # picks up the announce-target hash before "received via".
+    # Journal scrape: pull BOTH the announce-target hash AND any
+    # `via <hash>` relay. Without the via capture, pure transport
+    # nodes that only ever appear as relays (never as their own
+    # announce target) would be silently dropped from enrichment
+    # and their "relay" classification would never get computed.
     import subprocess, re as _re
     target_re = _re.compile(r"Valid announce for <([0-9a-f]+)>")
+    via_re    = _re.compile(r"received\s+via\s+<([0-9a-f]+)>")
     try:
         result = subprocess.run(
             ["journalctl", "-u", "rnsd.service", "--no-pager",
@@ -401,6 +405,9 @@ def _collect_candidate_hashes() -> list:
             m = target_re.search(line)
             if m:
                 candidates.add(m.group(1).lower())
+            v = via_re.search(line)
+            if v:
+                candidates.add(v.group(1).lower())
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 

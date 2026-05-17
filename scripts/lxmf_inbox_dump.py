@@ -90,7 +90,11 @@ logger = logging.getLogger("lxmf_inbox_dump")
 
 
 HOME = Path(os.path.expanduser("~"))
-MESSAGESTORE_DIR = HOME / ".lxmd" / "messagestore"
+# lxmd writes received .lxm files to ~/.lxmd/storage/messages/ (its
+# "messagestore" in the LXMRouter source, but the dir is literally
+# named "messages" on disk). Verified by inspecting an in-use lxmd
+# install on Pi OS Bookworm.
+MESSAGESTORE_DIR = HOME / ".lxmd" / "storage" / "messages"
 INBOX_JSON = HOME / ".lxmd" / "inbox.json"
 
 

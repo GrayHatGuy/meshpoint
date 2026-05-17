@@ -90,10 +90,11 @@ def main() -> int:
         return 1
 
     # ── Load lxmd's identity (read-only) ─────────────────────────
-    # lxmd's identity file location is fixed by the lxmf package.
-    # We MUST use this identity so peers see messages coming from
-    # our real lxmf address (the one shown in /api/reticulum/identity).
-    identity_path = os.path.expanduser("~/.lxmd/storage/identity")
+    # lxmd keeps its identity at ~/.lxmd/identity (NOT under storage/,
+    # despite the rest of its state living there). We MUST use this
+    # exact file so peers see messages coming from our real lxmf
+    # address (the one shown in /api/reticulum/identity).
+    identity_path = os.path.expanduser("~/.lxmd/identity")
     if not os.path.isfile(identity_path):
         _eprint(f"ERROR: lxmd identity not found at {identity_path}")
         return 1

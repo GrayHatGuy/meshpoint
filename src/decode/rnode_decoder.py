@@ -56,8 +56,20 @@ HEADER_TYPE_MASK   = 0b01000000  # bit 6
 DEST_TYPE_MASK     = 0b00001100  # bits 3-2
 PACKET_TYPE_MASK   = 0b00000011  # bits 1-0
 
-HEADER_1_MIN_LEN = 19            # flags + hops + 16B hash + context
-HEADER_2_MIN_LEN = 35            # flags + hops + 16B transport + 16B hash + context
+# Reticulum frames captured via the SX1302 concentrator path arrive
+# with a one-byte radio-driver prefix at raw[0] BEFORE the standard
+# RNS header begins. Empirically verified by comparing decoded
+# transport_id and dest_hash against known peer hashes from the
+# sidecar's lxmf_peers.json: every field was shifted right by exactly
+# one byte (e.g. decoded transport `01c7b745…79` vs real
+# `c7b745…792e` -- the `01` is the hops byte and the trailing `2e`
+# slid into the next field). All offsets here therefore start at
+# raw[FRAME_PREFIX_LEN+0]. If a future driver fix removes the prefix
+# byte, set FRAME_PREFIX_LEN = 0 to revert.
+FRAME_PREFIX_LEN = 1
+
+HEADER_1_MIN_LEN = FRAME_PREFIX_LEN + 19  # prefix + flags + hops + 16B hash + context
+HEADER_2_MIN_LEN = FRAME_PREFIX_LEN + 35  # prefix + flags + hops + 16B transport + 16B hash + context
 
 # Reticulum packet_type values (bits 1-0 of flags)
 _PTYPE_DATA         = 0x00
@@ -93,14 +105,19 @@ class RnodeDecoder:
             )
             return None
 
-        flags       = raw[0]
-        hops        = raw[1]
+        # Skip the radio-driver prefix byte (see FRAME_PREFIX_LEN
+        # comment above). All subsequent indexing is relative to the
+        # start of the real RNS header.
+        p = FRAME_PREFIX_LEN
+
+        flags       = raw[p + 0]
+        hops        = raw[p + 1]
         header_type = (flags & HEADER_TYPE_MASK) >> 6
         packet_type = flags & PACKET_TYPE_MASK
 
         if header_type == 0:
             # HEADER_1: no transport relay field
-            dest_hash    = raw[2:2 + TRUNCATED_HASH_LEN].hex()
+            dest_hash    = raw[p + 2:p + 2 + TRUNCATED_HASH_LEN].hex()
             payload      = raw[HEADER_1_MIN_LEN:]
             transport_id = None
         else:
@@ -111,8 +128,9 @@ class RnodeDecoder:
                     len(raw), HEADER_2_MIN_LEN,
                 )
                 return None
-            transport_id = raw[2:2 + TRUNCATED_HASH_LEN].hex()
-            dest_hash    = raw[2 + TRUNCATED_HASH_LEN:2 + 2 * TRUNCATED_HASH_LEN].hex()
+            transport_id = raw[p + 2:p + 2 + TRUNCATED_HASH_LEN].hex()
+            dest_hash    = raw[p + 2 + TRUNCATED_HASH_LEN:
+                              p + 2 + 2 * TRUNCATED_HASH_LEN].hex()
             payload      = raw[HEADER_2_MIN_LEN:]
 
         pkt_type = _PACKET_TYPE_MAP.get(packet_type, PacketType.UNKNOWN)

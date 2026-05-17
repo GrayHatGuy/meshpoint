@@ -48,8 +48,18 @@ fail()  { echo "[setup_rnsd] ERROR: $*" >&2; exit 1; }
 # watches lxmd's messagestore via kernel inotify so the dashboard inbox
 # updates with sub-second latency instead of polling. Tiny pure-Python
 # ctypes wrapper, no compile step.
-info "Installing rns + lxmf + inotify_simple via pip --user for $INVOKING_USER..."
-sudo -u "$INVOKING_USER" pip install --user --upgrade rns lxmf inotify_simple
+#
+# --break-system-packages: required on Debian 12 Bookworm / Pi OS 2023+
+# where PEP 668 marks the system Python as "externally managed" and
+# pip refuses to install without an explicit override. The flag is
+# misnamed -- it does NOT touch apt-managed system packages; it only
+# permits installing into the user's ~/.local/. We deliberately keep
+# rns/lxmf out of a venv because lxmsendmsg / rnsd / lxmd are designed
+# to live on the user's PATH at ~/.local/bin and the systemd units
+# point straight at those paths.
+PIP_FLAGS="--user --upgrade --break-system-packages"
+info "Installing rns + lxmf + inotify_simple via pip ($PIP_FLAGS) for $INVOKING_USER..."
+sudo -u "$INVOKING_USER" pip install $PIP_FLAGS rns lxmf inotify_simple
 
 RNSD_BIN="$USER_HOME/.local/bin/rnsd"
 LXMD_BIN="$USER_HOME/.local/bin/lxmd"

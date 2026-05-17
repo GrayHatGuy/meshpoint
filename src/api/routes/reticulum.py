@@ -313,9 +313,19 @@ def _parse_recent_announces(limit: int = 50) -> list[dict]:
 
 
 def _journal_ts_to_iso(ts: str) -> Optional[str]:
-    """Convert '2026-05-16 22:18:11' to an ISO 8601 string."""
+    """Convert '2026-05-16 22:18:11' (Pi local time) to a UTC ISO 8601 string.
+
+    rnsd writes log timestamps in the host's local timezone, not UTC.
+    If we tagged them UTC verbatim, the browser would compute "X ago"
+    using its own local clock and the gap would be off by the host's
+    UTC offset (we saw 4h on an EDT box). Treat the naive string as
+    local time and convert before emitting.
+    """
     try:
-        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        return dt.isoformat()
+        naive = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        # astimezone() on a naive datetime (Py3.6+) interprets it as
+        # local time and produces an aware datetime in the local zone.
+        local_aware = naive.astimezone()
+        return local_aware.astimezone(timezone.utc).isoformat()
     except ValueError:
         return None

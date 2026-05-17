@@ -707,6 +707,93 @@
     margin-left: 0.3rem;
 }
 
+/* ── Reticulum Stack Status card (Phase 1 #6b) ──────────────── */
+/* Live rnstatus panel: service lamps + per-interface field grid,
+   plus the Restart Stack action below. Reuses the existing
+   .r-card / .r-btn / .r-hint styles so it fits in visually with
+   the rest of the Reticulum cards on the Radio tab. */
+.rns-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin: 0.4rem 0 0.6rem;
+}
+.rns-stat__loading {
+    padding: 0.6rem;
+    text-align: center;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.45);
+    font-style: italic;
+}
+.rns-stat__svcrow {
+    display: flex;
+    gap: 1rem;
+    padding: 0.4rem 0.6rem;
+    background: rgba(255,255,255,0.03);
+    border-radius: 4px;
+    font-size: 0.78rem;
+}
+.rns-stat__svc { display: inline-flex; align-items: center; gap: 0.4rem; }
+.rns-stat__svc em { font-style: normal; color: rgba(255,255,255,0.55); }
+.rns-stat__lamp {
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+}
+.rns-stat__lamp--on  { background: rgba(80, 220, 140, 0.85); box-shadow: 0 0 4px rgba(80, 220, 140, 0.6); }
+.rns-stat__lamp--off { background: rgba(255, 100, 100, 0.55); }
+
+.rns-stat__ifaces {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.rns-stat__iface {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.rns-stat__iface-head {
+    background: rgba(80, 180, 255, 0.10);
+    padding: 0.3rem 0.6rem;
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.74rem;
+    color: rgba(180, 220, 255, 0.95);
+    border-bottom: 1px solid rgba(80, 180, 255, 0.18);
+}
+.rns-stat__field {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 0.5rem;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.74rem;
+}
+.rns-stat__field:nth-child(even) { background: rgba(255,255,255,0.02); }
+.rns-stat__field-key {
+    color: rgba(255,255,255,0.5);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.66rem;
+    align-self: center;
+}
+.rns-stat__field-val {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    color: rgba(255,255,255,0.85);
+}
+/* Restart button uses the warn variant if the existing system has
+   one; falls back to a soft red if not. */
+.r-btn--warn {
+    background: rgba(255, 140, 80, 0.18);
+    color: rgba(255, 200, 160, 0.95);
+    border: 1px solid rgba(255, 140, 80, 0.35);
+}
+.r-btn--warn:hover:not(:disabled) {
+    background: rgba(255, 140, 80, 0.28);
+    border-color: rgba(255, 140, 80, 0.55);
+}
+
 /* ── Address-book edit affordance on Channels card (Phase 1 #2b) ─── */
 /* Pencil icon next to a peer name. Operator-set names get a fully
    opaque pencil; classifier-only (un-edited) names get a low-opacity

@@ -81,6 +81,7 @@ class RadioSettings {
                     <div id="rns-card-config"></div>
                     <div id="rns-card-announce"></div>
                     <div id="rns-card-destinations"></div>
+                    <div id="rns-card-status"></div>
 
                     <div class="r-console-foot">
                         <span class="r-console-foot__hint">
@@ -147,6 +148,14 @@ class RadioSettings {
         const rnsDest = new RnsDestinationsCard(api);
         rnsDest.mount(document.getElementById('rns-card-destinations'));
         this._cards.push(rnsDest);
+
+        // Phase 1 #6b: live rnstatus diagnostic panel with restart
+        // affordance. Lives at the bottom of the Reticulum section
+        // because it's the lowest-frequency surface (only checked
+        // when something looks off).
+        const rnsStatus = new RnsStatusCard(api);
+        rnsStatus.mount(document.getElementById('rns-card-status'));
+        this._cards.push(rnsStatus);
 
         // Phase 1 #4 (revised): the Reticulum Messages card has been
         // removed from the Radio tab. LXMF messaging lives on the

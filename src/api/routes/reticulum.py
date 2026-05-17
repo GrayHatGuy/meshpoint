@@ -927,6 +927,65 @@ def _record_announce_outcome(success: bool) -> None:
         logger.warning("Could not persist announce outcome: %s", exc)
 
 
+# ── Phase 1 #6b: stack restart for the rnstatus card ─────────────────
+
+
+_SYSTEMCTL_BIN  = "/bin/systemctl"
+_RESTART_TIMEOUT_SEC = 12.0
+
+
+@router.post("/restart")
+async def restart_stack() -> dict:
+    """Bounce rnsd; lxmd cascades via systemd PartOf=rnsd.service.
+
+    Operator-triggered "Restart Stack" button on the Radio tab's
+    status card. Pre-condition: the meshpoint user has a narrow
+    sudoers grant for exactly `systemctl restart rnsd.service`
+    (see scripts/templates/meshpoint-lxmf.sudoers, second line).
+
+    Brief outage warning is on the frontend; this handler just
+    fires the command and reports outcome. lxmd will restart
+    automatically because its unit declares PartOf=rnsd.service
+    (see scripts/templates/lxmd.service). The sidecar
+    (lxmf-inbox-dump) is NOT restarted -- it reconnects to the
+    new rnsd via its shared-instance socket on the next event,
+    no operator action needed.
+    """
+    cmd = ["sudo", "-n", _SYSTEMCTL_BIN, "restart", "rnsd.service"]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=_RESTART_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=504,
+            detail=f"systemctl restart rnsd timed out after {_RESTART_TIMEOUT_SEC}s",
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo or systemctl not available on this host",
+        )
+
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        logger.warning(
+            "systemctl restart rnsd failed (rc=%d): %s",
+            result.returncode, stderr,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"restart failed: {stderr[:500]}" or "restart failed",
+        )
+
+    return {
+        "ok":            True,
+        "restarted":     ["rnsd.service", "lxmd.service (via PartOf)"],
+        "restarted_at":  datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+
 def _read_inbox_json() -> list[dict]:
     """Return the `messages` array from the sidecar's inbox.json.
 

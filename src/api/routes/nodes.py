@@ -43,9 +43,22 @@ def _enrich_reticulum_nodes(nodes: list) -> list:
         if (n.get("protocol") or "").lower() != "reticulum":
             continue
         meta = enrich.get(n.get("node_id") or "", {})
-        # Don't clobber an existing display_name (e.g. one already
-        # set from a future operator-edited address book).
-        if not n.get("display_name") and meta.get("display_name"):
+        # The node repository pre-populates display_name with a
+        # "!<hash>" placeholder when nothing better is available --
+        # we treat that as no-name-yet and let the classifier's
+        # auto-discovered display_name win. For Reticulum the air
+        # protocol IS the source of truth (display_name lives in
+        # the announce app_data); the LXMF address never changes
+        # but the name can, so re-syncing every render is correct.
+        #
+        # FUTURE: when an operator-editable address book lands,
+        # check that FIRST and prefer it over the classifier's
+        # name. The address book entry should win, the classifier
+        # name should win over the "!<hash>" placeholder.
+        existing = n.get("display_name") or ""
+        node_id  = n.get("node_id") or ""
+        is_placeholder = existing == f"!{node_id}" or not existing
+        if is_placeholder and meta.get("display_name"):
             n["display_name"] = meta["display_name"]
         n["peer_class"] = meta.get("class") or "unknown"
         n["is_lxmf"]    = bool(meta.get("is_lxmf"))

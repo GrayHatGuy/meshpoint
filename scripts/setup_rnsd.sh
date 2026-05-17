@@ -44,8 +44,12 @@ fail()  { echo "[setup_rnsd] ERROR: $*" >&2; exit 1; }
 [ -d "$TEMPLATE_DIR" ] || fail "Templates not found at $TEMPLATE_DIR. Run from a Meshpoint checkout."
 
 # ── 1. Install rns + lxmf via pip (user-level) ───────────────────────
-info "Installing rns + lxmf via pip --user for $INVOKING_USER..."
-sudo -u "$INVOKING_USER" pip install --user --upgrade rns lxmf
+# inotify_simple is for the lxmf_inbox_dump.py sidecar (Phase 2 #3) -- it
+# watches lxmd's messagestore via kernel inotify so the dashboard inbox
+# updates with sub-second latency instead of polling. Tiny pure-Python
+# ctypes wrapper, no compile step.
+info "Installing rns + lxmf + inotify_simple via pip --user for $INVOKING_USER..."
+sudo -u "$INVOKING_USER" pip install --user --upgrade rns lxmf inotify_simple
 
 RNSD_BIN="$USER_HOME/.local/bin/rnsd"
 LXMD_BIN="$USER_HOME/.local/bin/lxmd"
@@ -97,6 +101,50 @@ install_unit() {
 
 install_unit "rnsd.service" "$RNSD_BIN"
 install_unit "lxmd.service" "$LXMD_BIN"
+
+# Phase 2 #3: the inbox-dumper sidecar exec is a script in this repo,
+# not a binary from pip. Same install_unit helper, different exec path.
+DUMPER_SCRIPT="$REPO_DIR/scripts/lxmf_inbox_dump.py"
+if [ -f "$DUMPER_SCRIPT" ]; then
+    sudo chmod 755 "$DUMPER_SCRIPT"
+    install_unit "lxmf-inbox-dump.service" "$DUMPER_SCRIPT"
+else
+    warn "lxmf_inbox_dump.py not found at $DUMPER_SCRIPT -- skipping inbox dumper"
+fi
+
+# Phase 2 #3: sudoers rule so the meshpoint dashboard user can invoke
+# lxmsendmsg as the rnsd user (typically mp) for the send endpoint.
+# Render template -> tmpfile -> visudo -cf validate -> install.
+# We validate BEFORE moving into place because a broken file in
+# /etc/sudoers.d/ can lock the box out of sudo entirely.
+SUDOERS_TEMPLATE="$TEMPLATE_DIR/meshpoint-lxmf.sudoers"
+LXMSENDMSG_BIN="$USER_HOME/.local/bin/lxmsendmsg"
+if [ -f "$SUDOERS_TEMPLATE" ] && [ -x "$LXMSENDMSG_BIN" ]; then
+    SUDOERS_TMP="$(mktemp)"
+    sed -e "s|__USER__|$INVOKING_USER|g" \
+        -e "s|__LXMSENDMSG__|$LXMSENDMSG_BIN|g" \
+        "$SUDOERS_TEMPLATE" > "$SUDOERS_TMP"
+    if sudo visudo -cf "$SUDOERS_TMP" >/dev/null; then
+        info "Installing /etc/sudoers.d/meshpoint-lxmf"
+        sudo install -o root -g root -m 0440 \
+            "$SUDOERS_TMP" /etc/sudoers.d/meshpoint-lxmf
+    else
+        warn "Rendered sudoers failed visudo -cf -- NOT installing (send endpoint will 403)"
+    fi
+    rm -f "$SUDOERS_TMP"
+elif [ ! -x "$LXMSENDMSG_BIN" ]; then
+    warn "lxmsendmsg not found at $LXMSENDMSG_BIN -- skipping sudoers rule"
+fi
+
+# Phase 2 #3: meshpoint writes its sent-message log to /opt/meshpoint/data
+# so the inbox endpoint can show both sent + received in thread view.
+# Ensure the dir exists and meshpoint owns it.
+MESHPOINT_DATA_DIR="/opt/meshpoint/data"
+if id -u meshpoint >/dev/null 2>&1; then
+    sudo mkdir -p "$MESHPOINT_DATA_DIR"
+    sudo chown meshpoint:meshpoint "$MESHPOINT_DATA_DIR"
+    sudo chmod 755 "$MESHPOINT_DATA_DIR"
+fi
 
 sudo systemctl daemon-reload
 
@@ -177,6 +225,14 @@ sudo systemctl enable --now rnsd.service
 
 info "Enabling and starting lxmd.service"
 sudo systemctl enable --now lxmd.service
+
+# Phase 2 #3: the inbox dumper sidecar. Only enable if the unit was
+# actually installed above (the script may have been skipped on a
+# stripped-down repo checkout).
+if [ -f /etc/systemd/system/lxmf-inbox-dump.service ]; then
+    info "Enabling and starting lxmf-inbox-dump.service"
+    sudo systemctl enable --now lxmf-inbox-dump.service
+fi
 
 sleep 5
 

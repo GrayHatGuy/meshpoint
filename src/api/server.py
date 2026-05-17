@@ -90,9 +90,28 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             await nodeinfo_broadcaster.start()
 
         _init_routes(pipeline, config, identity, tx_service, message_repo)
+
+        # Phase 2 #3: watch the LXMF inbox + sent-log mtimes and
+        # broadcast a "lxmf_inbox_changed" event to all connected
+        # dashboards whenever they tick. The frontend then re-fetches
+        # /api/reticulum/inbox -- we don't push the payload itself so
+        # multi-MB inboxes don't get sprayed to every socket.
+        # Polling cadence: 2s. The MESSAGESTORE event-driven part
+        # lives in the sidecar (kernel inotify, sub-second). 2s here
+        # is just for the file-stat -> broadcast leg, which is free.
+        import asyncio  # local import: lifespan-only
+        lxmf_watch_task = asyncio.create_task(
+            _watch_lxmf_artifacts(), name="lxmf-inbox-watcher",
+        )
+
         print_banner(config)
         logger.info("Meshpoint started -- listening for packets")
         yield
+        lxmf_watch_task.cancel()
+        try:
+            await lxmf_watch_task
+        except (asyncio.CancelledError, Exception):
+            pass
         if nodeinfo_broadcaster is not None:
             await nodeinfo_broadcaster.stop()
         await upstream.stop()
@@ -440,6 +459,51 @@ def _get_channel_plan(config: AppConfig):
         return ConcentratorChannelPlan.for_region(config.radio.region)
     except Exception:
         return None
+
+
+async def _watch_lxmf_artifacts() -> None:
+    """Poll LXMF inbox/sent artifact mtimes; broadcast on change.
+
+    Both files have separate change rhythms:
+      * inbox.json is rewritten by the lxmf_inbox_dump.py sidecar
+        whenever a new .lxm file appears in lxmd's messagestore
+        (kernel inotify, sub-second).
+      * data/lxmf_sent.jsonl is appended-to by THIS process every
+        time POST /api/reticulum/send succeeds.
+
+    We watch both and broadcast "lxmf_inbox_changed" on the WebSocket
+    when either ticks. The frontend re-fetches /api/reticulum/inbox
+    in response. We don't push the payload itself because:
+      * inbox can be hundreds of KB after months of use and we don't
+        want to fan it out to every connected dashboard on every change
+      * keeping the broadcast minimal lets us add filtering knobs
+        (per-conversation subscriptions, since-cursor, etc.) later
+        without breaking wire compat
+
+    A 2s poll on two file stats is essentially free (<1us per stat on
+    a tmpfs-cached path). Picked over an asyncio inotify wrapper
+    because no asyncio inotify lib is in our deps and the stat-loop
+    is honest about its semantics.
+    """
+    from src.api.routes.reticulum import inbox_artifact_mtimes
+    import asyncio
+
+    last_inbox_mt, last_sent_mt = inbox_artifact_mtimes()
+    while True:
+        try:
+            await asyncio.sleep(2.0)
+            inbox_mt, sent_mt = inbox_artifact_mtimes()
+            if inbox_mt != last_inbox_mt or sent_mt != last_sent_mt:
+                last_inbox_mt, last_sent_mt = inbox_mt, sent_mt
+                await ws_manager.broadcast(
+                    "lxmf_inbox_changed",
+                    {"inbox_mtime": inbox_mt, "sent_mtime": sent_mt},
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never let the watcher die silently -- log and continue.
+            logger.exception("lxmf-inbox-watcher tick failed")
 
 
 async def _send_meshcore_advert(meshcore_tx, mc_source=None) -> None:

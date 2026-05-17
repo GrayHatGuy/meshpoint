@@ -1,0 +1,32 @@
+[Unit]
+Description=LXMF inbox -> JSON snapshot daemon (Meshpoint sidecar)
+# Must come after lxmd because we read its messagestore. Not strictly
+# Requires=lxmd because the dumper handles a missing messagestore
+# gracefully (mkdir + empty snapshot) -- but ordering still matters
+# so the initial snapshot is meaningful right after a boot.
+After=lxmd.service
+Wants=lxmd.service
+
+[Service]
+Type=simple
+# __USER__ is substituted by setup_rnsd.sh at install time (same
+# pattern as rnsd.service / lxmd.service). The daemon decodes the
+# user's own messagestore, so it MUST be the same user that owns
+# ~/.lxmd -- never run as root.
+User=__USER__
+Group=__USER__
+# PYTHONUNBUFFERED so log lines appear in journalctl immediately
+# (same reason we set it on rnsd/lxmd -- see those files).
+Environment=PYTHONUNBUFFERED=1
+# __EXEC__ is substituted to /opt/meshpoint/scripts/lxmf_inbox_dump.py
+# (the script needs to be world-readable + executable; setup_rnsd.sh
+# handles the chmod).
+ExecStart=__EXEC__
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

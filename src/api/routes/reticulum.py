@@ -27,16 +27,19 @@ Data sources:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import subprocess
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,23 @@ _RNSD_USER = os.environ.get("MESHPOINT_RNSD_USER", "mp")
 _RNSD_HOME = Path(f"/home/{_RNSD_USER}")
 _LXMD_CONFIG = _RNSD_HOME / ".lxmd" / "config"
 _KNOWN_DESTINATIONS = _RNSD_HOME / ".reticulum" / "storage" / "known_destinations"
+
+# ── Phase 2 #3: inbox + send paths ───────────────────────────────────
+# inbox.json is written by the lxmf_inbox_dump.py sidecar (runs as the
+# _RNSD_USER, inotify-driven). We only READ it here -- never write.
+_INBOX_JSON = _RNSD_HOME / ".lxmd" / "inbox.json"
+# lxmsendmsg is the canonical LXMF send CLI shipped by the lxmf pip
+# package. We invoke it via `sudo -u <rnsd_user>` (the sudoers rule
+# installed by setup_rnsd.sh narrows this to the exact binary path).
+_LXMSENDMSG_BIN = _RNSD_HOME / ".local" / "bin" / "lxmsendmsg"
+# Append-only log of messages WE sent, so the inbox endpoint can show
+# both directions in a thread view. lxmd's messagestore is inbox-only --
+# lxmsendmsg doesn't leave a local trace of what we sent.
+_SENT_LOG = Path("data/lxmf_sent.jsonl")
+# A send that takes longer than this is almost certainly a routing
+# failure rather than a slow network -- 30s is well past the worst
+# expected ack-window for a 3-hop LoRa path.
+_SEND_TIMEOUT_SEC = 30.0
 
 # Cap how much journal history we read per request.
 # Reticulum announces typically fire every few hours per destination,
@@ -310,6 +330,256 @@ def _parse_recent_announces(limit: int = 50) -> list[dict]:
     peers = list(seen.values())
     peers.sort(key=lambda p: p["last_heard"] or "", reverse=True)
     return peers[:limit]
+
+
+# ── Phase 2 #3: send + inbox ─────────────────────────────────────────
+
+
+_HASH_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+class SendMessageBody(BaseModel):
+    """Request body for POST /api/reticulum/send.
+
+    Fields mirror the lxmsendmsg CLI: destination, optional title,
+    message body. We deliberately don't expose lxmsendmsg's --propagate
+    or --propagate-via flags yet -- defaults work for direct delivery
+    and adding routing knobs without a UX story for them just creates
+    foot-guns.
+    """
+    destination_hash: str = Field(..., description="32-char lowercase hex")
+    content: str = Field(..., min_length=1, max_length=4000)
+    title: Optional[str] = Field(default=None, max_length=200)
+
+    @field_validator("destination_hash")
+    @classmethod
+    def _validate_hash(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not _HASH_RE.match(v):
+            raise ValueError(
+                "destination_hash must be 32 lowercase hex characters"
+            )
+        return v
+
+
+@router.post("/send")
+async def send_message(body: SendMessageBody) -> dict:
+    """Send an LXMF message via lxmsendmsg.
+
+    We shell out to the same CLI MeshChat / Sideband users would type
+    interactively, via a tightly-scoped sudoers rule (see
+    scripts/templates/meshpoint-lxmf.sudoers). This keeps Meshpoint's
+    venv LXMF-free, same architectural rule as #1+#2.
+
+    Returns 200 with `{"sent": true, ...}` on success. Failures bubble
+    up as HTTP 4xx/5xx with the underlying error message verbatim --
+    operators will need the lxmsendmsg stderr to diagnose routing
+    issues (unreachable destination, no path, etc.).
+    """
+    cmd = [
+        "sudo", "-n", "-u", _RNSD_USER, str(_LXMSENDMSG_BIN),
+        body.destination_hash, body.content,
+    ]
+    if body.title:
+        # lxmsendmsg uses --title for the optional subject line.
+        cmd.insert(-2, "--title")
+        cmd.insert(-2, body.title)
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=_SEND_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=504,
+            detail=f"lxmsendmsg timed out after {_SEND_TIMEOUT_SEC}s",
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo not available on this host",
+        )
+
+    if result.returncode != 0:
+        # Common causes: sudoers rule missing/broken (returncode 1,
+        # stderr "a password is required"), lxmsendmsg not installed,
+        # destination unreachable. Pass through the actual error so
+        # the frontend can show something diagnostic.
+        stderr = (result.stderr or result.stdout or "").strip()
+        logger.warning("lxmsendmsg failed (rc=%d): %s", result.returncode, stderr)
+        raise HTTPException(
+            status_code=502,
+            detail=f"lxmsendmsg failed: {stderr[:500]}" or "lxmsendmsg failed",
+        )
+
+    sent_at = datetime.now(tz=timezone.utc)
+    record = {
+        "destination_hash": body.destination_hash,
+        "title":            body.title or "",
+        "content":          body.content,
+        "timestamp":        sent_at.timestamp(),
+        "sent_iso":         sent_at.isoformat(),
+    }
+    _append_sent_log(record)
+
+    return {
+        "sent":             True,
+        "destination_hash": body.destination_hash,
+        "sent_iso":         record["sent_iso"],
+    }
+
+
+def _append_sent_log(record: dict) -> None:
+    """Append one JSON line to data/lxmf_sent.jsonl.
+
+    Append-only because (a) it's the simplest format that's also
+    crash-safe (no partial-rewrite risk like a single JSON array),
+    (b) the inbox endpoint reads the file fully on every request so
+    the read cost is the same shape, and (c) the file is bounded by
+    operator behavior, not network traffic -- a few hundred messages
+    over the lifetime of a deployment isn't a perf concern.
+
+    setup_rnsd.sh provisions data/ with meshpoint:meshpoint
+    ownership; on a fresh dev box where it doesn't exist, we
+    best-effort mkdir and log on failure rather than raising (the
+    send itself already succeeded -- losing the local log row is
+    annoying but not a 500-worthy error).
+    """
+    try:
+        _SENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _SENT_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        logger.warning("Could not append to %s: %s", _SENT_LOG, exc)
+
+
+@router.get("/inbox")
+async def get_inbox(limit: int = 500) -> dict:
+    """Return merged inbox (received) + sent messages for thread view.
+
+    Reads two artifacts:
+      * inbox.json  -- written by the lxmf_inbox_dump.py sidecar,
+                       contains everything in lxmd's messagestore
+      * data/lxmf_sent.jsonl -- our own append-only sent log
+
+    Each returned entry has `direction` set to "in" or "out" so the
+    frontend can render bubbles on the correct side without needing
+    to know our own LXMF address. The frontend still gets that
+    address via /api/reticulum/identity for the conversation key
+    (because received-from-X and sent-to-X are the same thread).
+    """
+    received = _read_inbox_json()
+    sent = _read_sent_log()
+
+    merged: list[dict] = []
+
+    for m in received:
+        merged.append({
+            "direction":        "in",
+            "hash":             m.get("hash") or "",
+            "peer_hash":        m.get("source_hash") or "",
+            "title":            m.get("title") or "",
+            "content":          m.get("content") or "",
+            "timestamp":        m.get("timestamp"),
+            "iso":              m.get("received_iso"),
+        })
+
+    for s in sent:
+        merged.append({
+            "direction":        "out",
+            "hash":             "",  # we don't get one back from lxmsendmsg
+            "peer_hash":        s.get("destination_hash") or "",
+            "title":            s.get("title") or "",
+            "content":          s.get("content") or "",
+            "timestamp":        s.get("timestamp"),
+            "iso":              s.get("sent_iso"),
+        })
+
+    # Newest-first.
+    merged.sort(key=lambda x: x.get("timestamp") or 0.0, reverse=True)
+    if limit > 0:
+        merged = merged[:limit]
+
+    return {
+        "messages": merged,
+        "count":    len(merged),
+        "inbox_generated_at": _inbox_generated_at(),
+    }
+
+
+def _read_inbox_json() -> list[dict]:
+    """Return the `messages` array from the sidecar's inbox.json.
+
+    Returns an empty list if the file is missing (sidecar not yet
+    running, fresh install before any messages received) or malformed
+    (sidecar crashed mid-write -- shouldn't happen because the sidecar
+    writes atomically, but defensive coding).
+    """
+    try:
+        with _INBOX_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        msgs = payload.get("messages", [])
+        return msgs if isinstance(msgs, list) else []
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("inbox.json read failed: %s", exc)
+        return []
+
+
+def _inbox_generated_at() -> Optional[str]:
+    """Expose the sidecar's last-write time so the UI can show staleness."""
+    try:
+        with _INBOX_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        gen = payload.get("generated_at")
+        return gen if isinstance(gen, str) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _read_sent_log() -> list[dict]:
+    """Parse data/lxmf_sent.jsonl line-by-line, skipping bad rows.
+
+    JSONL not JSON so a partial line at the end (rare but possible
+    if we ever crash mid-append) doesn't poison the whole log. One
+    bad row = one skipped row, never a 500 on the inbox endpoint.
+    """
+    if not _SENT_LOG.exists():
+        return []
+    out: list[dict] = []
+    try:
+        with _SENT_LOG.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError as exc:
+        logger.debug("sent log read failed: %s", exc)
+        return []
+    return out
+
+
+# ── Watch hooks for server.py's WebSocket broadcaster ────────────────
+
+
+def inbox_artifact_mtimes() -> tuple[float, float]:
+    """Return (inbox.json mtime, sent log mtime). Used by the server's
+    background watcher task to decide when to broadcast a refresh.
+
+    Either path can be missing on a fresh install; we return 0.0 for
+    a missing file so the watcher's "changed?" check just sees the
+    transition from 0.0 -> first-real-mtime as a single change event.
+    """
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+    return (_mtime(_INBOX_JSON), _mtime(_SENT_LOG))
 
 
 def _journal_ts_to_iso(ts: str) -> Optional[str]:

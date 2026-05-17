@@ -1,0 +1,26 @@
+# Allow the meshpoint service user to invoke lxmsendmsg as the user
+# that owns the LXMF identity (typically `mp`), without a password.
+#
+# This is the narrowest possible grant that makes the Meshpoint
+# dashboard's "send LXMF message" endpoint work:
+#   - only one specific binary (lxmsendmsg) -- no shell, no other
+#     commands
+#   - only one target user (the placeholder __USER__ is substituted
+#     by setup_rnsd.sh at install time, e.g. mp)
+#   - NOPASSWD so the FastAPI request handler doesn't hang on a
+#     terminal that doesn't exist
+#
+# Installed at /etc/sudoers.d/meshpoint-lxmf with mode 0440 (the
+# permission sudo demands for drop-in files). setup_rnsd.sh validates
+# the rendered file with `visudo -cf` before moving it into place --
+# a syntactically-broken sudoers file would lock the box out of sudo
+# entirely, which we never want to risk.
+#
+# Tightening considered + rejected:
+#   - Restricting arguments (e.g. only allow hex hashes) -- sudoers
+#     argument matching is fiddly and easy to get wrong; the request
+#     validation lives in the FastAPI handler instead.
+#   - Granting via a setuid wrapper script -- harder to audit,
+#     harder to revoke, and sudoers is the standard pattern for
+#     this kind of cross-user delegation on Linux.
+meshpoint ALL=(__USER__) NOPASSWD: __LXMSENDMSG__

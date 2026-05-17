@@ -717,6 +717,11 @@
 }
 .rns-edit-row { transition: background 0.1s; }
 .rns-edit-row:hover { background: rgba(255,255,255,0.03); }
+/* Phase 1 #5: LXMF rows are clickable to open the conversation
+   on the Messages tab. Cursor cue tells operators it's interactive.
+   Non-LXMF rows (transport/relay/propagation) stay default cursor
+   because messaging them is meaningless. */
+.rns-edit-row[data-class="lxmf"] { cursor: pointer; }
 .rns-edit-mark {
     margin-left: 0.25rem;
     color: rgba(80, 180, 255, 0.85);

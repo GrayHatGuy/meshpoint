@@ -29,9 +29,15 @@ class MessagingChat {
         this._messages = [];
         this._allLoaded = false;
         this._headerName.textContent = convo.node_name || convo.node_id;
-        this._headerBadge.textContent = convo.protocol === 'meshcore' ? 'MC' : 'MT';
-        this._headerBadge.className = 'msg-chat__protocol-badge ' +
-            (convo.protocol === 'meshcore' ? 'msg-chat__protocol-badge--mc' : 'msg-chat__protocol-badge--mt');
+        // Phase 1 #5: third protocol badge for Reticulum (cyan, matches
+        // the RNS palette used in conv list + Channels card).
+        let badgeText, badgeMod;
+        if (convo.protocol === 'meshcore')        { badgeText = 'MC';  badgeMod = 'mc';  }
+        else if (convo.protocol === 'reticulum')  { badgeText = 'RNS'; badgeMod = 'rns'; }
+        else                                       { badgeText = 'MT';  badgeMod = 'mt';  }
+        this._headerBadge.textContent = badgeText;
+        this._headerBadge.className =
+            `msg-chat__protocol-badge msg-chat__protocol-badge--${badgeMod}`;
 
         this._messagesEl.innerHTML = '';
         this._lastDayKey = null;
@@ -91,6 +97,18 @@ class MessagingChat {
         this._loading = true;
 
         try {
+            // Phase 1 #5: route Reticulum conversations through
+            // /api/reticulum/inbox and filter to this peer. RNS
+            // doesn't have a per-conversation endpoint -- the inbox
+            // is one flat array with peer_hash on each message --
+            // so the filter lives client-side. Same render path as
+            // MT/MC once normalized to the bubble shape.
+            if (this._conversation.protocol === 'reticulum') {
+                await this._loadRnsMessages();
+                this._allLoaded = true;  // no pagination for RNS yet
+                return;
+            }
+
             const nodeId = encodeURIComponent(this._conversation.node_id);
             const res = await fetch(`/api/messages/conversation/${nodeId}?limit=50`);
             const messages = await res.json();
@@ -111,6 +129,48 @@ class MessagingChat {
             console.error('Failed to load messages:', e);
         } finally {
             this._loading = false;
+        }
+    }
+
+    async _loadRnsMessages() {
+        // Fetch the merged inbox + sent log, filter to this peer,
+        // sort chronologically, normalize to the bubble shape the
+        // _appendBubble renderer expects (direction "sent"/"received",
+        // text content, timestamp ISO).
+        const peer = (this._conversation.node_id || '').toLowerCase();
+        const res = await fetch('/api/reticulum/inbox?limit=500');
+        if (!res.ok) {
+            this._messagesEl.innerHTML = '<div class="msg-chat__empty">'
+                + 'Inbox unavailable. Is rnsd/lxmd running?</div>';
+            return;
+        }
+        const data = await res.json();
+        const all = data.messages || [];
+        const filtered = all
+            .filter(m => (m.peer_hash || '').toLowerCase() === peer)
+            .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+            .map(m => ({
+                id:         m.hash || `${m.iso}-${m.direction}`,
+                direction:  m.direction === 'out' ? 'sent' : 'received',
+                text:       m.title ? `${m.title}\n${m.content || ''}` : (m.content || ''),
+                node_id:    m.peer_hash,
+                node_name:  m.peer_display_name || '',
+                protocol:   'reticulum',
+                timestamp:  m.iso || new Date(
+                    (m.timestamp || 0) * 1000
+                ).toISOString(),
+                status:     '',
+            }));
+        this._messages = filtered;
+        this._messagesEl.innerHTML = '';
+        this._lastDayKey = null;
+        if (filtered.length === 0) {
+            this._messagesEl.innerHTML =
+                '<div class="msg-chat__empty">No messages with this peer yet. '
+                + 'Type below to send the first one.</div>';
+        } else {
+            filtered.forEach(msg => this._appendBubble(msg));
+            this._scrollToBottom();
         }
     }
 

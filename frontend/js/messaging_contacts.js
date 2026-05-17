@@ -15,18 +15,66 @@ class MessagingContacts {
 
     async load(includeOverheard = false) {
         try {
-            const [convosRes, channelsRes] = await Promise.all([
+            const [convosRes, channelsRes, rnsRes] = await Promise.all([
                 fetch(includeOverheard
                     ? '/api/messages/conversations?include_overheard=true'
                     : '/api/messages/conversations'),
                 fetch('/api/messages/channels'),
+                // Phase 1 #5: pull RNS messages in the same pass.
+                // .catch returns null so a missing rnsd doesn't break
+                // the MT/MC conversation list.
+                fetch('/api/reticulum/inbox?limit=500').catch(() => null),
             ]);
             this._conversations = await convosRes.json();
             this._channels = await channelsRes.json();
+
+            if (rnsRes && rnsRes.ok) {
+                const rnsData = await rnsRes.json();
+                this._mergeRnsConversations(rnsData.messages || []);
+            }
             this.render();
         } catch (e) {
             console.error('Failed to load conversations:', e);
         }
+    }
+
+    _mergeRnsConversations(rnsMessages) {
+        // RNS inbox is a flat list of messages with direction/peer_hash;
+        // collapse into one conversation per peer (latest message wins
+        // for preview + timestamp). Self-conversations (peer_hash ==
+        // our own LXMF address) are kept -- they're useful for testing
+        // and the user explicitly chose to keep them visible earlier
+        // in the Channels card design.
+        const byPeer = new Map();
+        for (const m of rnsMessages) {
+            const peer = m.peer_hash || '';
+            if (!peer) continue;
+            const existing = byPeer.get(peer);
+            if (!existing || (m.timestamp || 0) > (existing.timestamp || 0)) {
+                byPeer.set(peer, m);
+            }
+        }
+        // Drop any stale RNS entries the previous load left behind,
+        // then re-append from the fresh snapshot. Non-RNS conversations
+        // are untouched.
+        this._conversations = this._conversations.filter(
+            c => c.protocol !== 'reticulum'
+        );
+        for (const [peer, latest] of byPeer) {
+            this._conversations.push({
+                node_id:        peer,
+                node_name:      latest.peer_display_name
+                                  || (peer.slice(0, 12) + '…'),
+                protocol:       'reticulum',
+                last_message:   (latest.direction === 'out' ? '↑ ' : '')
+                                + (latest.content || ''),
+                last_timestamp: latest.iso || '',
+                unread_count:   0,
+                is_broadcast:   false,
+                peer_class:     latest.peer_class,
+            });
+        }
+        this._sortByRecent();
     }
 
     render() {
@@ -139,11 +187,13 @@ class MessagingContacts {
         el.dataset.nodeId = convo.node_id;
 
         const isChannel = !!convo.is_broadcast;
-        const iconClass = isChannel
-            ? 'msg-convo__icon--channel'
-            : convo.protocol === 'meshcore'
-                ? 'msg-convo__icon--mc'
-                : 'msg-convo__icon--mt';
+        // Phase 1 #5: third icon variant for Reticulum. Cyan to match
+        // the RNS palette used elsewhere (Channels card, Nodes panel).
+        let iconClass;
+        if (isChannel) iconClass = 'msg-convo__icon--channel';
+        else if (convo.protocol === 'meshcore')  iconClass = 'msg-convo__icon--mc';
+        else if (convo.protocol === 'reticulum') iconClass = 'msg-convo__icon--rns';
+        else iconClass = 'msg-convo__icon--mt';
 
         const iconText = isChannel
             ? '#'
@@ -153,7 +203,10 @@ class MessagingContacts {
             ? convo.node_name || `Ch ${convo.channel || 0}`
             : convo.node_name || convo.node_id;
 
-        const protoBadge = convo.protocol === 'meshcore' ? 'MC' : 'MT';
+        let protoBadge, badgeKey;
+        if (convo.protocol === 'meshcore')        { protoBadge = 'MC';  badgeKey = 'mc';  }
+        else if (convo.protocol === 'reticulum')  { protoBadge = 'RNS'; badgeKey = 'rns'; }
+        else                                       { protoBadge = 'MT';  badgeKey = 'mt';  }
 
         const timeStr = convo.last_timestamp
             ? new Date(convo.last_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -162,7 +215,7 @@ class MessagingContacts {
         el.innerHTML = `
             <div class="msg-convo__icon ${iconClass}">${iconText}</div>
             <div class="msg-convo__info">
-                <div class="msg-convo__name">${this._esc(displayName)} <span class="msg-convo__proto-badge msg-convo__proto-badge--${convo.protocol === 'meshcore' ? 'mc' : 'mt'}">${protoBadge}</span></div>
+                <div class="msg-convo__name">${this._esc(displayName)} <span class="msg-convo__proto-badge msg-convo__proto-badge--${badgeKey}">${protoBadge}</span></div>
                 <div class="msg-convo__preview">${this._esc(convo.last_message || '')}</div>
             </div>
             <div class="msg-convo__meta">

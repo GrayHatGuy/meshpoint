@@ -37,6 +37,7 @@ class MessagingPanel {
                         <button class="msg-protocol-toggle__btn msg-protocol-toggle__btn--active" data-filter="all">All</button>
                         <button class="msg-protocol-toggle__btn" data-filter="meshtastic">MT</button>
                         <button class="msg-protocol-toggle__btn" data-filter="meshcore">MC</button>
+                        <button class="msg-protocol-toggle__btn" data-filter="reticulum">RNS</button>
                     </div>
                     <div class="msg-sidebar__list" id="msg-convo-list"></div>
                 </div>
@@ -97,6 +98,17 @@ class MessagingPanel {
     }
 
     async _onSendMessage(text, convo) {
+        // Phase 1 #5: Reticulum sends route through the LXMF endpoint
+        // instead of /api/messages/send. The shape is different
+        // (destination_hash + content) and the optimistic+ack flow
+        // is simpler -- lxmsendmsg either succeeds or 502s, no
+        // separate ack callback. After success we trigger a contacts
+        // refresh so the conversation list picks up the new entry.
+        if (convo.protocol === 'reticulum') {
+            await this._sendRnsMessage(text, convo);
+            return;
+        }
+
         const isBroadcast = convo.is_broadcast || (convo.node_id || '').startsWith('broadcast:');
         const destination = isBroadcast ? 'broadcast' : convo.node_id;
 
@@ -139,6 +151,44 @@ class MessagingPanel {
         } catch (e) {
             console.error('Send failed:', e);
             this._chat.updateMessageStatus(tempMsg.id, 'network error', '');
+        }
+    }
+
+    async _sendRnsMessage(text, convo) {
+        // Mirror the optimistic-bubble pattern used by MT/MC sends.
+        const tempMsg = this._chat.addOptimisticMessage(text, 'reticulum');
+        try {
+            const res = await fetch('/api/reticulum/send', {
+                method:  'POST',
+                headers: {'Content-Type': 'application/json'},
+                body:    JSON.stringify({
+                    destination_hash: convo.node_id,
+                    content:          text,
+                }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                this._chat.updateMessageStatus(
+                    tempMsg.id,
+                    `failed: ${err.detail || `HTTP ${res.status}`}`, '',
+                );
+                return;
+            }
+            this._chat.updateMessageStatus(tempMsg.id, 'sent', '');
+            // Bump the conv list locally so the new message shows in
+            // the sidebar before the next WS-driven refresh tick.
+            this._contacts.addOrUpdateConversation({
+                node_id:   convo.node_id,
+                node_name: convo.node_name,
+                protocol:  'reticulum',
+                text:      text,
+                direction: 'sent',
+                timestamp: new Date().toISOString(),
+            });
+        } catch (e) {
+            this._chat.updateMessageStatus(
+                tempMsg.id, `network error: ${e.message}`, '',
+            );
         }
     }
 
@@ -189,6 +239,46 @@ class MessagingPanel {
                 direction: 'sent',
             });
         });
+
+        // Phase 1 #5: refresh RNS conversations when the sidecar
+        // republishes inbox/peers/contacts JSON. Inexpensive --
+        // .load() rebatches all three (MT convos, channels, RNS).
+        // If the currently-open thread is RNS, also reload its
+        // bubbles so a freshly-arrived message appears live.
+        window.concentratorWS.on('lxmf_inbox_changed', () => {
+            this._contacts.load(this._monitorMode);
+            if (this._activeConvo
+                    && this._activeConvo.protocol === 'reticulum') {
+                this._chat.setConversation(this._activeConvo);
+            }
+        });
+    }
+
+    // Phase 1 #5: cross-tab entry point used by the Radio tab's
+    // Channels card. Switches to the Messages tab and opens the
+    // conversation for the given LXMF address. If no conversation
+    // exists yet (no messages with that peer), we synthesise one
+    // so the operator can start typing right away.
+    openRnsConversation(peerHash, peerName) {
+        const tabBtn = document.querySelector('[data-tab="messages"]');
+        if (tabBtn) tabBtn.click();
+        // Defer the conversation open one tick so the tab switch
+        // has flushed and our contacts panel is in the DOM.
+        setTimeout(() => {
+            const existing = this._contacts._conversations.find(
+                c => c.protocol === 'reticulum' && c.node_id === peerHash
+            );
+            const convo = existing || {
+                node_id:        peerHash,
+                node_name:      peerName || (peerHash.slice(0, 12) + '…'),
+                protocol:       'reticulum',
+                last_message:   '',
+                last_timestamp: '',
+                unread_count:   0,
+                is_broadcast:   false,
+            };
+            this._onConversationSelected(convo);
+        }, 50);
     }
 
     async _loadStatus() {

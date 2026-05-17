@@ -67,17 +67,35 @@ class RnsDestinationsCard {
         this._root.querySelector('#rns-dest-refresh').addEventListener(
             'click', () => this._loadPeers(),
         );
-        // Phase 1 #2b: click any peer name cell to open inline edit.
-        // Local row (data-local="1") is excluded -- it represents
-        // ourselves; renaming the self lxmf address is a different
-        // operation (edit ~/.lxmd/config display_name).
+        // Phase 1 #2b: click any peer NAME cell to open inline edit.
+        // Phase 1 #5: click anywhere ELSE on a peer row to jump to
+        //             that peer's conversation on the Messages tab.
+        // Local row (data-local="1") is excluded from both -- it
+        // represents ourselves (renaming self is via ~/.lxmd/config
+        // display_name; messaging yourself isn't useful).
         this._root.querySelector('#rns-dest-body').addEventListener(
             'click', (ev) => {
-                const cell = ev.target.closest('.rns-name-cell');
-                if (!cell) return;
-                const row = cell.closest('.rns-edit-row');
+                const row = ev.target.closest('.rns-edit-row');
                 if (!row || row.dataset.local === '1') return;
-                this._openInlineEdit(row);
+
+                // Name cell -> edit name (preserves Phase 1 #2b UX).
+                if (ev.target.closest('.rns-name-cell')) {
+                    this._openInlineEdit(row);
+                    return;
+                }
+
+                // Anywhere else on the row -> open conversation. We
+                // only do this for LXMF-class peers; clicking a relay
+                // or transport node would be misleading (you can't
+                // message them, they don't run an LXMF endpoint).
+                const cls = row.dataset.class || 'unknown';
+                if (cls !== 'lxmf') return;
+                const hash = row.dataset.hash || '';
+                const name = row.dataset.currentName || '';
+                if (window.messagingPanel
+                        && typeof window.messagingPanel.openRnsConversation === 'function') {
+                    window.messagingPanel.openRnsConversation(hash, name);
+                }
             },
         );
     }

@@ -79,6 +79,10 @@
 
 .msg-convo__icon--mt { background: #3498db; }
 .msg-convo__icon--mc { background: #27ae60; }
+/* Phase 1 #5: Reticulum/LXMF icon. Cyan keeps the cross-tab
+   colour story consistent with the Channels card LXMF pill and
+   the Nodes-panel RNS badge. */
+.msg-convo__icon--rns { background: #06b6d4; }
 .msg-convo__icon--bcast { background: #e67e22; }
 .msg-convo__icon--channel {
     background: var(--surface-2, #22223a);
@@ -114,6 +118,7 @@
 
 .msg-convo__proto-badge--mt { background: #3498db; }
 .msg-convo__proto-badge--mc { background: #27ae60; }
+.msg-convo__proto-badge--rns { background: #06b6d4; }
 
 .msg-convo__info { flex: 1; min-width: 0; }
 
@@ -203,6 +208,7 @@
 
 .msg-chat__protocol-badge--mt { background: #3498db; color: #fff; }
 .msg-chat__protocol-badge--mc { background: #27ae60; color: #fff; }
+.msg-chat__protocol-badge--rns { background: #06b6d4; color: #fff; }
 
 .msg-chat__messages {
     flex: 1;

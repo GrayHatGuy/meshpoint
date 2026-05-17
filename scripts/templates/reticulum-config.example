@@ -29,9 +29,15 @@
   instance_control_port = 37429
 
 [logging]
-  # 0=critical .. 4=info .. 7=extreme. 4 is the sane default; bump to
-  # 7 temporarily when diagnosing announce-propagation or peering bugs.
-  loglevel = 4
+  # 0=critical .. 4=info .. 7=extreme.
+  #
+  # We default to 7 (Extra) because Meshpoint's /api/reticulum/peers
+  # endpoint scrapes "Valid announce for <hash>" lines out of rnsd's
+  # journal -- those lines are emitted at [Extra] level, so anything
+  # below 7 silently hides every peer the dashboard would otherwise
+  # show. Drop this to 4 only if you don't care about the peers card
+  # and want a quieter journal.
+  loglevel = 7
 
 [interfaces]
 

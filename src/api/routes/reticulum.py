@@ -246,14 +246,22 @@ def _parse_rnstatus() -> list[dict]:
     return interfaces
 
 
+# NB: interface names can contain spaces AND brackets, e.g.
+# "RNodeInterface[Meshpoint RNode USB]". The lazy `.+?` plus the
+# `\s*$` end-anchor force the engine to expand interface just enough
+# to let the optional RSSI/SNR tail (or end-of-line) match -- without
+# the anchor, lazy stops at the first space and the RSSI group is
+# silently skipped, producing rssi/snr = None on perfectly good lines.
 _ANNOUNCE_RE = re.compile(
     r"\[(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+"
     r"\[(?P<level>\w+)\]\s+"
     r"Valid announce for <(?P<hash>[0-9a-f]+)>\s+"
     r"(?P<hops>\d+)\s+hops? away"
     r"(?:,\s+received(?:\s+via\s+<(?P<via>[0-9a-f]+)>)?\s+on\s+"
-    r"(?P<interface>\S+(?:\s\S+)*?))?"
-    r"(?:\s+\[RSSI\s+(?P<rssi>-?\d+)dBm,\s+SNR\s+(?P<snr>-?[\d.]+)dB\])?",
+    r"(?P<interface>.+?)"
+    r"(?:\s+\[RSSI\s+(?P<rssi>-?\d+)dBm,\s+SNR\s+(?P<snr>-?[\d.]+)dB\])?"
+    r")?"
+    r"\s*$",
 )
 
 

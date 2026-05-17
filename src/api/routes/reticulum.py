@@ -67,6 +67,21 @@ _INBOX_JSON = _RNSD_HOME / ".lxmd" / "inbox.json"
 # class, is_lxmf, app_data_hex}. Used to substitute friendly names
 # into /api/reticulum/peers and /api/reticulum/inbox responses.
 _PEERS_JSON = _RNSD_HOME / ".lxmd" / "lxmf_peers.json"
+
+# Phase 1 #2b: operator-edited contact overrides. Highest priority in
+# the display-name chain (operator > classifier > placeholder). Lives
+# under data/ rather than .lxmd/ because meshpoint owns it and a
+# `git pull` of /opt/meshpoint must NEVER overwrite it.
+#
+# Schema:
+#   {
+#     "contacts": {
+#       "<hex_hash>": {"nickname": "Alice", "notes": "neighbor 2 blocks south"},
+#       ...
+#     },
+#     "updated_at": "<iso8601 utc>"
+#   }
+_CONTACTS_JSON = Path("data/lxmf_contacts.json")
 # The upstream lxmf pip package ships only the lxmd daemon, no send
 # CLI. We bundle our own tiny sender at scripts/lxmf_send.py and
 # invoke it via `sudo -u <rnsd_user>` (the sudoers rule installed by
@@ -179,11 +194,15 @@ async def get_peers(limit: int = 50) -> dict:
     """
     peers = _parse_recent_announces(limit=limit)
     enrich = _read_peers_enrichment()
+    contacts = read_contacts()
     for p in peers:
-        meta = enrich.get(p.get("hash") or "", {})
-        p["display_name"] = meta.get("display_name")
-        p["class"]        = meta.get("class") or "unknown"
-        p["is_lxmf"]      = bool(meta.get("is_lxmf"))
+        h = p.get("hash") or ""
+        meta = enrich.get(h, {})
+        name, source = resolve_display_name(h, meta, contacts)
+        p["display_name"]        = name
+        p["display_name_source"] = source           # operator|classifier|none
+        p["class"]               = meta.get("class") or "unknown"
+        p["is_lxmf"]             = bool(meta.get("is_lxmf"))
     return {"peers": peers, "count": len(peers)}
 
 
@@ -527,12 +546,15 @@ async def get_inbox(limit: int = 500) -> dict:
     received = _read_inbox_json()
     sent = _read_sent_log()
     enrich = _read_peers_enrichment()
+    contacts = read_contacts()
 
     def _peer_meta(h: str) -> dict:
         m = enrich.get(h, {})
+        name, source = resolve_display_name(h, m, contacts)
         return {
-            "peer_display_name": m.get("display_name"),
-            "peer_class":        m.get("class") or "unknown",
+            "peer_display_name":        name,
+            "peer_display_name_source": source,
+            "peer_class":               m.get("class") or "unknown",
         }
 
     merged: list[dict] = []
@@ -602,6 +624,152 @@ def read_peers_enrichment() -> dict:
 _read_peers_enrichment = read_peers_enrichment
 
 
+# ── Phase 1 #2b: operator-edited contact overrides ──────────────────
+
+
+_HASH_VALIDATE_RE = re.compile(r"^[0-9a-f]{32}$")
+_MAX_NICKNAME_LEN = 64
+_MAX_NOTES_LEN = 500
+
+
+def read_contacts() -> dict:
+    """Return {hash: {nickname, notes}} from data/lxmf_contacts.json.
+
+    Returns {} on any error so callers degrade gracefully. Same pattern
+    as read_peers_enrichment -- contacts are an enhancement, never a
+    correctness requirement.
+    """
+    if not _CONTACTS_JSON.exists():
+        return {}
+    try:
+        with _CONTACTS_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        contacts = payload.get("contacts", {})
+        return contacts if isinstance(contacts, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("lxmf_contacts.json read failed: %s", exc)
+        return {}
+
+
+def _write_contacts(contacts: dict) -> None:
+    """Atomically write contacts -- tmpfile + replace pattern."""
+    _CONTACTS_JSON.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "contacts":   contacts,
+        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    tmp = _CONTACTS_JSON.with_suffix(".json.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _CONTACTS_JSON)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except (TypeError, AttributeError):
+            # Py<3.8 doesn't have missing_ok; harmless
+            try: tmp.unlink()
+            except OSError: pass
+        raise
+
+
+def resolve_display_name(hash_hex: str,
+                         classifier_meta: dict | None = None,
+                         contacts: dict | None = None) -> tuple[Optional[str], str]:
+    """Apply the operator > classifier > placeholder priority chain.
+
+    Returns (display_name, source) where source is one of:
+      "operator"   -- name came from the operator's address book
+      "classifier" -- name came from announce app_data
+      "none"       -- no name available (caller should fall back to hash)
+
+    Centralized so peers / inbox / nodes endpoints all apply the same
+    rule and a future logic change (e.g. tags, "expired contact"
+    handling) lives in exactly one place.
+    """
+    if contacts is None:
+        contacts = read_contacts()
+    if classifier_meta is None:
+        classifier_meta = {}
+
+    op = contacts.get(hash_hex)
+    if isinstance(op, dict) and op.get("nickname"):
+        return (op["nickname"], "operator")
+
+    cl = classifier_meta.get("display_name")
+    if cl:
+        return (cl, "classifier")
+
+    return (None, "none")
+
+
+class ContactBody(BaseModel):
+    """PUT /api/reticulum/contacts/{hash} body."""
+    nickname: str = Field(..., min_length=1, max_length=_MAX_NICKNAME_LEN)
+    notes:    Optional[str] = Field(default=None, max_length=_MAX_NOTES_LEN)
+
+    @field_validator("nickname")
+    @classmethod
+    def _strip_nickname(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("nickname cannot be blank")
+        return v
+
+
+@router.get("/contacts")
+async def list_contacts() -> dict:
+    """Return the operator's address book (hash -> {nickname, notes})."""
+    contacts = read_contacts()
+    return {"contacts": contacts, "count": len(contacts)}
+
+
+@router.put("/contacts/{hash_hex}")
+async def upsert_contact(hash_hex: str, body: ContactBody) -> dict:
+    """Set or update one contact's nickname (and optional notes).
+
+    Hash is normalised to lowercase and validated for 32 hex chars
+    (standard LXMF address length). Anything else 422s.
+    """
+    hash_hex = hash_hex.strip().lower()
+    if not _HASH_VALIDATE_RE.match(hash_hex):
+        raise HTTPException(
+            status_code=422,
+            detail="hash must be 32 lowercase hex characters",
+        )
+    contacts = read_contacts()
+    record: dict = {"nickname": body.nickname}
+    if body.notes:
+        record["notes"] = body.notes.strip()
+    contacts[hash_hex] = record
+    try:
+        _write_contacts(contacts)
+    except OSError as exc:
+        logger.exception("Failed to write contacts file: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not persist contact: {exc}",
+        )
+    return {"ok": True, "hash": hash_hex, "contact": record}
+
+
+@router.delete("/contacts/{hash_hex}")
+async def delete_contact(hash_hex: str) -> dict:
+    """Remove an operator override; display name falls back to classifier."""
+    hash_hex = hash_hex.strip().lower()
+    if not _HASH_VALIDATE_RE.match(hash_hex):
+        raise HTTPException(status_code=422, detail="invalid hash format")
+    contacts = read_contacts()
+    existed = contacts.pop(hash_hex, None) is not None
+    if existed:
+        try:
+            _write_contacts(contacts)
+        except OSError as exc:
+            logger.exception("Failed to write contacts file: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True, "hash": hash_hex, "removed": existed}
+
+
 def _read_inbox_json() -> list[dict]:
     """Return the `messages` array from the sidecar's inbox.json.
 
@@ -660,25 +828,29 @@ def _read_sent_log() -> list[dict]:
 # ── Watch hooks for server.py's WebSocket broadcaster ────────────────
 
 
-def inbox_artifact_mtimes() -> tuple[float, float, float]:
-    """Return (inbox.json mtime, sent log mtime, peers.json mtime).
+def inbox_artifact_mtimes() -> tuple[float, float, float, float]:
+    """Return (inbox.json, sent log, peers.json, contacts.json) mtimes.
 
     Used by the server's background watcher task to decide when to
-    broadcast a refresh over the WebSocket. Any of the three paths
-    can be missing on a fresh install; we return 0.0 for a missing
-    file so the watcher's "changed?" check sees the transition from
+    broadcast a refresh over the WebSocket. Any path can be missing
+    on a fresh install; we return 0.0 for a missing file so the
+    watcher's "changed?" check sees the transition from
     0.0 -> first-real-mtime as a single change event.
 
-    peers.json was added in Phase 1 #2 so display-name auto-discovery
-    propagates to connected dashboards without waiting for the 30s
-    poll fallback.
+    contacts.json (Phase 1 #2b) added so an operator editing a
+    nickname on one browser tab causes every other connected tab
+    (including the Dashboard nodes panel and Packets feed) to
+    re-render with the new name within 2s.
     """
     def _mtime(p: Path) -> float:
         try:
             return p.stat().st_mtime
         except OSError:
             return 0.0
-    return (_mtime(_INBOX_JSON), _mtime(_SENT_LOG), _mtime(_PEERS_JSON))
+    return (
+        _mtime(_INBOX_JSON), _mtime(_SENT_LOG),
+        _mtime(_PEERS_JSON), _mtime(_CONTACTS_JSON),
+    )
 
 
 def _journal_ts_to_iso(ts: str) -> Optional[str]:

@@ -67,6 +67,107 @@ class RnsDestinationsCard {
         this._root.querySelector('#rns-dest-refresh').addEventListener(
             'click', () => this._loadPeers(),
         );
+        // Phase 1 #2b: click any peer name cell to open inline edit.
+        // Local row (data-local="1") is excluded -- it represents
+        // ourselves; renaming the self lxmf address is a different
+        // operation (edit ~/.lxmd/config display_name).
+        this._root.querySelector('#rns-dest-body').addEventListener(
+            'click', (ev) => {
+                const cell = ev.target.closest('.rns-name-cell');
+                if (!cell) return;
+                const row = cell.closest('.rns-edit-row');
+                if (!row || row.dataset.local === '1') return;
+                this._openInlineEdit(row);
+            },
+        );
+    }
+
+    _openInlineEdit(row) {
+        const cell = row.querySelector('.rns-name-cell');
+        if (!cell || cell.querySelector('.rns-edit-input')) return; // already open
+        const hash    = row.dataset.hash || '';
+        const current = row.dataset.currentName || '';
+        const source  = row.dataset.source || 'none';
+        const isOperatorSet = (source === 'operator');
+
+        // Replace the cell content with an inline edit form. Single
+        // text input + Save / Cancel / (if operator-set) Revert. Enter
+        // saves, Escape cancels. Keeps the cell width stable so the
+        // table doesn't jump when the user opens it.
+        cell.innerHTML = `
+            <span class="rns-edit-form">
+                <input type="text" class="r-input rns-edit-input"
+                       value="${this._esc(current)}"
+                       placeholder="Nickname"
+                       maxlength="64" />
+                <button class="r-btn r-btn--primary rns-edit-save">Save</button>
+                <button class="r-btn r-btn--secondary rns-edit-cancel">Cancel</button>
+                ${isOperatorSet
+                    ? '<button class="r-btn r-btn--secondary rns-edit-revert" title="Remove operator override; revert to announce name">Revert</button>'
+                    : ''}
+            </span>
+        `;
+        const input = cell.querySelector('.rns-edit-input');
+        input.focus();
+        input.select();
+
+        const close = () => this._loadPeers();   // re-render fresh
+
+        cell.querySelector('.rns-edit-cancel').addEventListener(
+            'click', close,
+        );
+        cell.querySelector('.rns-edit-save').addEventListener(
+            'click', () => this._saveContact(hash, input.value, close),
+        );
+        const revertBtn = cell.querySelector('.rns-edit-revert');
+        if (revertBtn) {
+            revertBtn.addEventListener(
+                'click', () => this._deleteContact(hash, close),
+            );
+        }
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter')  this._saveContact(hash, input.value, close);
+            if (ev.key === 'Escape') close();
+        });
+    }
+
+    async _saveContact(hash, nickname, done) {
+        const nick = (nickname || '').trim();
+        if (!nick) {
+            this._api.toast('Nickname cannot be blank');
+            return;
+        }
+        try {
+            const res = await fetch(`/api/reticulum/contacts/${hash}`, {
+                method:  'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body:    JSON.stringify({nickname: nick}),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${res.status}`);
+            }
+            this._api.toast(`Saved "${nick}"`);
+        } catch (e) {
+            this._api.toast(`Save failed: ${e.message}`);
+        }
+        done();
+    }
+
+    async _deleteContact(hash, done) {
+        try {
+            const res = await fetch(`/api/reticulum/contacts/${hash}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${res.status}`);
+            }
+            this._api.toast('Reverted to announce name');
+        } catch (e) {
+            this._api.toast(`Revert failed: ${e.message}`);
+        }
+        done();
     }
 
     async _loadPeers() {
@@ -136,25 +237,30 @@ class RnsDestinationsCard {
     }
 
     _peerRow(peer, idx) {
-        // Peer shape from /api/reticulum/peers (Phase 1 #2 enrichment):
+        // Peer shape from /api/reticulum/peers (Phase 1 #2 + #2b):
         //   { hash, hops, via, interface, last_heard, rssi, snr,
-        //     display_name, class, is_lxmf }
+        //     display_name, display_name_source, class, is_lxmf }
         //
-        // display_name comes from the sidecar's announce-data classifier
-        // (lxmf_peers.json). class is one of:
-        //   lxmf | propagation | relay | rns_service | transport | unknown
+        // display_name_source ("operator"|"classifier"|"none") tells
+        // us whether the operator has overridden the auto-discovered
+        // name -- shown as a small pencil icon.
         const hash = peer.hash || '--';
         const cls = peer.class || 'unknown';
         const name = peer.display_name;
+        const source = peer.display_name_source || 'none';
 
-        // Name cell: prefer display_name; fall back to <em>(no name)</em>
-        // for hashes the classifier doesn't have data for yet. The class
-        // badge always renders so operators can see at a glance whether
-        // a hash is an LXMF correspondent vs a relay/transport node they
-        // can't actually message.
+        // Operator-set: show a pencil to indicate "you edited this".
+        // Click anywhere on the name cell (including the name itself,
+        // or the pencil/edit affordance below) opens the inline edit
+        // input. We tag the cell with data attrs so the click handler
+        // wired in _wire() can find the hash and current name.
+        const pencil = (source === 'operator')
+            ? ' <span class="rns-edit-mark" title="Operator-set name">✎</span>'
+            : ' <span class="rns-edit-mark rns-edit-mark--hint" title="Click to set a name">✎</span>';
+
         const nameCell = name
-            ? `${this._esc(name)} <span class="rns-class rns-class--${cls}">${cls}</span>`
-            : `<em class="rns-class__empty">(no name)</em> <span class="rns-class rns-class--${cls}">${cls}</span>`;
+            ? `<span class="rns-name-text">${this._esc(name)}</span>${pencil} <span class="rns-class rns-class--${cls}">${cls}</span>`
+            : `<em class="rns-class__empty">(no name)</em>${pencil} <span class="rns-class rns-class--${cls}">${cls}</span>`;
 
         // Route: hops + via-relay summary. Previously the "Name" column,
         // moved here so the new column ordering reads name -> hash -> route.
@@ -168,9 +274,12 @@ class RnsDestinationsCard {
             ? `${peer.rssi.toFixed(1)} dBm` : '--';
 
         return `
-            <tr class="ch-table__row" data-class="${cls}">
+            <tr class="ch-table__row rns-edit-row" data-class="${cls}"
+                data-hash="${this._esc(hash)}"
+                data-current-name="${this._esc(name || '')}"
+                data-source="${source}">
                 <td class="ch-table__idx">${idx}</td>
-                <td>${nameCell}</td>
+                <td class="rns-name-cell">${nameCell}</td>
                 <td class="ch-table__hash" title="${this._esc(hash)}">
                     ${this._esc(hash.length > 16 ? hash.slice(0, 16) + '…' : hash)}
                 </td>

@@ -3,7 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from src.analytics.network_mapper import NetworkMapper
-from src.api.routes.reticulum import read_peers_enrichment
+from src.api.routes.reticulum import (
+    read_contacts,
+    read_peers_enrichment,
+    resolve_display_name,
+)
 from src.storage.node_repository import NodeRepository
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -37,31 +41,32 @@ def _enrich_reticulum_nodes(nodes: list) -> list:
     rather than being dropped, so the panel still shows them.
     """
     enrich = read_peers_enrichment()
-    if not enrich:
+    contacts = read_contacts()
+    if not enrich and not contacts:
         return nodes
     for n in nodes:
         if (n.get("protocol") or "").lower() != "reticulum":
             continue
-        meta = enrich.get(n.get("node_id") or "", {})
+        node_id = n.get("node_id") or ""
+        meta    = enrich.get(node_id, {})
         # The node repository pre-populates display_name with a
         # "!<hash>" placeholder when nothing better is available --
-        # we treat that as no-name-yet and let the classifier's
-        # auto-discovered display_name win. For Reticulum the air
-        # protocol IS the source of truth (display_name lives in
-        # the announce app_data); the LXMF address never changes
-        # but the name can, so re-syncing every render is correct.
-        #
-        # FUTURE: when an operator-editable address book lands,
-        # check that FIRST and prefer it over the classifier's
-        # name. The address book entry should win, the classifier
-        # name should win over the "!<hash>" placeholder.
+        # we treat that as no-name-yet and let the resolved name
+        # (operator > classifier) win. For Reticulum the air protocol
+        # is the fallback truth (display_name lives in announce
+        # app_data); operator overrides from data/lxmf_contacts.json
+        # win when set.
         existing = n.get("display_name") or ""
-        node_id  = n.get("node_id") or ""
         is_placeholder = existing == f"!{node_id}" or not existing
-        if is_placeholder and meta.get("display_name"):
-            n["display_name"] = meta["display_name"]
-        n["peer_class"] = meta.get("class") or "unknown"
-        n["is_lxmf"]    = bool(meta.get("is_lxmf"))
+        name, source = resolve_display_name(node_id, meta, contacts)
+        if is_placeholder and name:
+            n["display_name"] = name
+        # Always expose the source + class so the frontend can render
+        # the pencil indicator and class badge even when the
+        # underlying display_name was already non-placeholder.
+        n["display_name_source"] = source
+        n["peer_class"]          = meta.get("class") or "unknown"
+        n["is_lxmf"]             = bool(meta.get("is_lxmf"))
     return nodes
 
 

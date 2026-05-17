@@ -495,13 +495,14 @@ async def _watch_lxmf_artifacts() -> None:
             cur_mt = inbox_artifact_mtimes()
             if cur_mt != last_mt:
                 last_mt = cur_mt
-                inbox_mt, sent_mt, peers_mt = cur_mt
+                inbox_mt, sent_mt, peers_mt, contacts_mt = cur_mt
                 await ws_manager.broadcast(
                     "lxmf_inbox_changed",
                     {
-                        "inbox_mtime": inbox_mt,
-                        "sent_mtime":  sent_mt,
-                        "peers_mtime": peers_mt,
+                        "inbox_mtime":    inbox_mt,
+                        "sent_mtime":     sent_mt,
+                        "peers_mtime":    peers_mt,
+                        "contacts_mtime": contacts_mt,
                     },
                 )
         except asyncio.CancelledError:

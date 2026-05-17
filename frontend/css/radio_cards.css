@@ -706,3 +706,46 @@
     color: rgba(255,255,255,0.4);
     margin-left: 0.3rem;
 }
+
+/* ── Address-book edit affordance on Channels card (Phase 1 #2b) ─── */
+/* Pencil icon next to a peer name. Operator-set names get a fully
+   opaque pencil; classifier-only (un-edited) names get a low-opacity
+   hint that becomes visible on row hover -- so the UI doesn't shout
+   "edit me!" at every row but the affordance is discoverable. */
+.rns-name-cell {
+    cursor: pointer;
+}
+.rns-edit-row { transition: background 0.1s; }
+.rns-edit-row:hover { background: rgba(255,255,255,0.03); }
+.rns-edit-mark {
+    margin-left: 0.25rem;
+    color: rgba(80, 180, 255, 0.85);
+    font-size: 0.78em;
+    user-select: none;
+}
+.rns-edit-mark--hint {
+    color: rgba(255,255,255,0.15);
+    transition: color 0.12s;
+}
+.rns-edit-row:hover .rns-edit-mark--hint {
+    color: rgba(255,255,255,0.45);
+}
+.rns-name-text {
+    /* No underline-on-hover -- pencil is the affordance, not the name. */
+}
+.rns-edit-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+}
+.rns-edit-input {
+    flex: 1;
+    min-width: 4rem;
+    padding: 0.15rem 0.4rem;
+    font-size: 0.8rem;
+}
+.rns-edit-form .r-btn {
+    padding: 0.2rem 0.55rem;
+    font-size: 0.7rem;
+}

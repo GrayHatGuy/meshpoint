@@ -81,7 +81,6 @@ class RadioSettings {
                     <div id="rns-card-config"></div>
                     <div id="rns-card-announce"></div>
                     <div id="rns-card-destinations"></div>
-                    <div id="rns-card-messages"></div>
 
                     <div class="r-console-foot">
                         <span class="r-console-foot__hint">
@@ -149,12 +148,12 @@ class RadioSettings {
         rnsDest.mount(document.getElementById('rns-card-destinations'));
         this._cards.push(rnsDest);
 
-        // Phase 2 #3: LXMF inbox + send. Lives below destinations
-        // because operators usually want to know "who's heard" before
-        // composing a message to a hash.
-        const rnsMessages = new RnsMessagesCard(api);
-        rnsMessages.mount(document.getElementById('rns-card-messages'));
-        this._cards.push(rnsMessages);
+        // Phase 1 #4 (revised): the Reticulum Messages card has been
+        // removed from the Radio tab. LXMF messaging lives on the
+        // Messages tab alongside MT/MC chats (via the RNS protocol
+        // filter chip there). Click any peer row in the Channels
+        // card above to jump to that conversation on the Messages
+        // tab -- removes the need for a separate Messages card here.
     }
 
     _buildApi() {

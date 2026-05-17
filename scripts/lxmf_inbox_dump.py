@@ -129,10 +129,23 @@ INBOX_JSON       = HOME / ".lxmd" / "inbox.json"
 ANNOUNCE_CACHE_DIR = HOME / ".reticulum" / "storage" / "cache" / "announces"
 PEERS_JSON         = HOME / ".lxmd" / "lxmf_peers.json"
 
+# Phase 1 #6: operator-set periodic-announce preference. Owned by
+# the meshpoint service user; the sidecar only READS this file. The
+# announce-fire shell-outs to /opt/meshpoint/scripts/lxmf_announce.py
+# (same script the dashboard "Send Now" button triggers via sudo).
+ANNOUNCE_STATE_JSON = Path("/opt/meshpoint/data/lxmf_announce.json")
+ANNOUNCE_SCRIPT     = Path("/opt/meshpoint/scripts/lxmf_announce.py")
+
 # How often the peer enricher runs. 60s is a good balance: announces
 # don't change minute-to-minute, but waiting 5+ minutes would mean
 # operators see stale class/display-name data after a new peer arrives.
 PEER_ENRICH_INTERVAL_SEC = 60.0
+
+# How often we check whether a periodic announce is due. Doesn't need
+# to be tight -- the period is operator-set in minutes, so checking
+# every 30s gives at most 30s slop in fire time. Independent of the
+# 60s peer-enrich tick because they could shift over time.
+ANNOUNCE_POLL_INTERVAL_SEC = 30.0
 
 # Bound the size of an LXMF display_name we'll accept from app_data.
 # Anything longer is almost certainly not a real name (binary garbage
@@ -508,6 +521,106 @@ def _write_atomic_path(target: Path, payload: dict) -> None:
         raise
 
 
+def _read_announce_state() -> dict:
+    """Return the operator's announce preference + last-fire metadata.
+
+    Returns sensible defaults (period=0 disabled, last_announce_at=None)
+    on missing/malformed file. Read-only from the sidecar's perspective
+    -- the dashboard owns writes.
+    """
+    default = {
+        "period_minutes":   0,
+        "last_announce_at": None,
+        "last_announce_ok": None,
+    }
+    if not ANNOUNCE_STATE_JSON.exists():
+        return default
+    try:
+        with ANNOUNCE_STATE_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return {**default, **(payload or {})}
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("announce state read failed: %s", exc)
+        return default
+
+
+def _write_announce_outcome(success: bool) -> None:
+    """Best-effort persist of last_announce_at + last_announce_ok.
+
+    The meshpoint user owns the file but its directory is world-r/x
+    via setup_rnsd.sh; the file itself is mode 644 after dashboard
+    creates it. If the sidecar can't write (permission, race), we
+    log and continue rather than crash the daemon.
+    """
+    try:
+        state = _read_announce_state()
+        state["last_announce_at"] = __import__("time").time()
+        state["last_announce_ok"] = bool(success)
+        ANNOUNCE_STATE_JSON.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ANNOUNCE_STATE_JSON.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        # chmod 644 so dashboard (different user) can keep reading
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, ANNOUNCE_STATE_JSON)
+    except OSError as exc:
+        logger.warning("Could not persist announce outcome: %s", exc)
+
+
+def maybe_fire_periodic_announce() -> None:
+    """If the saved period has elapsed since last announce, fire one.
+
+    Triggered from the main loop at ANNOUNCE_POLL_INTERVAL_SEC
+    cadence. period=0 means "auto-announce disabled" -- no-op.
+
+    Uses the same scripts/lxmf_announce.py that the dashboard
+    "Send Now" button shells out to, so there's exactly one code
+    path for "fire an announce" (audit + tweak in one place).
+    """
+    state = _read_announce_state()
+    period_min = int(state.get("period_minutes") or 0)
+    if period_min <= 0:
+        return  # auto-announce off
+
+    import time as _time
+    last = state.get("last_announce_at") or 0.0
+    elapsed = _time.time() - float(last)
+    if elapsed < period_min * 60.0:
+        return  # not yet due
+
+    if not ANNOUNCE_SCRIPT.is_file() or not os.access(ANNOUNCE_SCRIPT, os.X_OK):
+        logger.warning(
+            "Periodic announce due but %s missing/not executable",
+            ANNOUNCE_SCRIPT,
+        )
+        return
+
+    import subprocess
+    logger.info(
+        "Periodic announce due (period=%dm, elapsed=%.0fs); firing",
+        period_min, elapsed,
+    )
+    try:
+        result = subprocess.run(
+            [str(ANNOUNCE_SCRIPT)],
+            capture_output=True, text=True, timeout=15.0,
+        )
+        ok = (result.returncode == 0)
+        if not ok:
+            logger.warning(
+                "Periodic announce failed (rc=%d): %s",
+                result.returncode,
+                (result.stderr or result.stdout or "")[:200],
+            )
+        _write_announce_outcome(success=ok)
+    except subprocess.TimeoutExpired:
+        logger.warning("Periodic announce timed out")
+        _write_announce_outcome(success=False)
+    except Exception:  # noqa: BLE001
+        logger.exception("Periodic announce raised")
+        _write_announce_outcome(success=False)
+
+
 def main() -> int:
     # Make sure the messagestore exists -- lxmd creates it lazily on
     # first received message, so on a brand-new install the dir may
@@ -531,7 +644,8 @@ def main() -> int:
         logger.exception("Initial peer enrichment failed")
 
     import time as _time
-    last_enrich = _time.time()
+    last_enrich  = _time.time()
+    last_announce_poll = 0.0   # force first check on startup
 
     ino = INotify()
     # CREATE catches `touch new.lxm`-style writes; MOVED_TO catches
@@ -591,6 +705,18 @@ def main() -> int:
                 )
             except Exception:
                 logger.exception("Periodic peer enrichment failed")
+
+        # Phase 1 #6: check if a periodic auto-announce is due.
+        # Independent from enrich cadence -- announce period is
+        # operator-set in minutes (much coarser than peer-enrich),
+        # so we just poll the state file every 30s. The fire
+        # function itself is a no-op when period=0 or not yet due.
+        if now - last_announce_poll >= ANNOUNCE_POLL_INTERVAL_SEC:
+            last_announce_poll = now
+            try:
+                maybe_fire_periodic_announce()
+            except Exception:
+                logger.exception("Periodic announce check failed")
 
     logger.info("Stopped")
     return 0

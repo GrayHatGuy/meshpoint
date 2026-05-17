@@ -86,7 +86,17 @@ _CONTACTS_JSON = Path("data/lxmf_contacts.json")
 # CLI. We bundle our own tiny sender at scripts/lxmf_send.py and
 # invoke it via `sudo -u <rnsd_user>` (the sudoers rule installed by
 # setup_rnsd.sh narrows this to exactly this script path).
-_LXMF_SEND_SCRIPT = Path("/opt/meshpoint/scripts/lxmf_send.py")
+_LXMF_SEND_SCRIPT     = Path("/opt/meshpoint/scripts/lxmf_send.py")
+# Phase 1 #6: paired announce trigger script. Same sudo bridge as
+# the sender. Used by "Send Now" + the periodic auto-announce
+# fired from the sidecar.
+_LXMF_ANNOUNCE_SCRIPT = Path("/opt/meshpoint/scripts/lxmf_announce.py")
+# Phase 1 #6: operator's chosen announce period (minutes) lives in
+# data/lxmf_announce.json. 0 = disabled. The sidecar reads this on
+# each periodic tick and triggers an announce when elapsed >=
+# period since last_announce_at.
+_ANNOUNCE_STATE_JSON  = Path("data/lxmf_announce.json")
+_ANNOUNCE_TIMEOUT_SEC = 15.0
 # Append-only log of messages WE sent, so the inbox endpoint can show
 # both directions in a thread view. lxmd's messagestore is inbox-only --
 # lxmsendmsg doesn't leave a local trace of what we sent.
@@ -784,6 +794,137 @@ async def delete_contact(hash_hex: str) -> dict:
             logger.exception("Failed to write contacts file: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc))
     return {"ok": True, "hash": hash_hex, "removed": existed}
+
+
+# ── Phase 1 #6: announce trigger + periodic preference ──────────────
+
+
+_MAX_ANNOUNCE_PERIOD_MIN = 1440  # 24h cap, matches the UI presets
+
+
+class AnnouncePeriodBody(BaseModel):
+    """PUT /api/reticulum/announce/period body."""
+    period_minutes: int = Field(..., ge=0, le=_MAX_ANNOUNCE_PERIOD_MIN)
+
+
+def read_announce_state() -> dict:
+    """Return {period_minutes, last_announce_at, last_announce_ok}.
+
+    last_announce_at is a unix epoch float (or None if never).
+    last_announce_ok mirrors the most recent announce's outcome so
+    the dashboard can surface "last attempt failed" UI without
+    needing to scrape lxmd logs.
+    """
+    default = {
+        "period_minutes":    0,
+        "last_announce_at":  None,
+        "last_announce_ok":  None,
+    }
+    if not _ANNOUNCE_STATE_JSON.exists():
+        return default
+    try:
+        with _ANNOUNCE_STATE_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return {**default, **(payload or {})}
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("lxmf_announce.json read failed: %s", exc)
+        return default
+
+
+def _write_announce_state(state: dict) -> None:
+    """Atomic write of the announce-state JSON."""
+    _ANNOUNCE_STATE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _ANNOUNCE_STATE_JSON.with_suffix(".json.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _ANNOUNCE_STATE_JSON)
+    except Exception:
+        try: tmp.unlink()
+        except OSError: pass
+        raise
+
+
+@router.get("/announce")
+async def get_announce_state() -> dict:
+    """Return announce period preference + last-fire metadata."""
+    return read_announce_state()
+
+
+@router.put("/announce")
+async def set_announce_period(body: AnnouncePeriodBody) -> dict:
+    """Set the auto-announce period in minutes. 0 = disabled.
+
+    Does NOT fire an announce immediately -- that's POST /announce.
+    The sidecar polls this state on its 60s tick and triggers an
+    announce when (now - last_announce_at) >= period * 60.
+    """
+    state = read_announce_state()
+    state["period_minutes"] = body.period_minutes
+    try:
+        _write_announce_state(state)
+    except OSError as exc:
+        logger.exception("Failed to persist announce state: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True, **state}
+
+
+@router.post("/announce")
+async def fire_announce() -> dict:
+    """Trigger one LXMF announce immediately ("Send Now" button).
+
+    Shells out to scripts/lxmf_announce.py via the same sudo bridge
+    used by the send endpoint. Records the outcome in the state
+    JSON so the sidecar's periodic timer doesn't double-fire and
+    so the dashboard can show last-attempt status.
+    """
+    cmd = [
+        "sudo", "-n", "-u", _RNSD_USER, str(_LXMF_ANNOUNCE_SCRIPT),
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=_ANNOUNCE_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        _record_announce_outcome(success=False)
+        raise HTTPException(
+            status_code=504,
+            detail=f"lxmf_announce.py timed out after {_ANNOUNCE_TIMEOUT_SEC}s",
+        )
+    except FileNotFoundError:
+        _record_announce_outcome(success=False)
+        raise HTTPException(status_code=503, detail="sudo not available")
+
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        logger.warning("lxmf_announce.py failed (rc=%d): %s",
+                       result.returncode, stderr)
+        _record_announce_outcome(success=False)
+        raise HTTPException(
+            status_code=502,
+            detail=f"announce failed: {stderr[:500]}" or "announce failed",
+        )
+
+    _record_announce_outcome(success=True)
+    return {
+        "ok":              True,
+        "dest_hash":       (result.stdout or "").strip(),
+        "fired_at":        datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+
+def _record_announce_outcome(success: bool) -> None:
+    """Persist last-fire timestamp + ok flag. Best-effort -- a
+    failed write doesn't surface as a 500 to the caller (the
+    announce itself already succeeded or failed)."""
+    try:
+        state = read_announce_state()
+        state["last_announce_at"] = time.time()
+        state["last_announce_ok"] = bool(success)
+        _write_announce_state(state)
+    except OSError as exc:
+        logger.warning("Could not persist announce outcome: %s", exc)
 
 
 def _read_inbox_json() -> list[dict]:

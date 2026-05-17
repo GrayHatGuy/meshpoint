@@ -23,4 +23,4 @@
 #   - Granting via a setuid wrapper script -- harder to audit,
 #     harder to revoke, and sudoers is the standard pattern for
 #     this kind of cross-user delegation on Linux.
-meshpoint ALL=(__USER__) NOPASSWD: __LXMSENDMSG__
+meshpoint ALL=(__USER__) NOPASSWD: __LXMSENDMSG__, __LXMANNOUNCE__

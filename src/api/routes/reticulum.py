@@ -62,10 +62,11 @@ _KNOWN_DESTINATIONS = _RNSD_HOME / ".reticulum" / "storage" / "known_destination
 # inbox.json is written by the lxmf_inbox_dump.py sidecar (runs as the
 # _RNSD_USER, inotify-driven). We only READ it here -- never write.
 _INBOX_JSON = _RNSD_HOME / ".lxmd" / "inbox.json"
-# lxmsendmsg is the canonical LXMF send CLI shipped by the lxmf pip
-# package. We invoke it via `sudo -u <rnsd_user>` (the sudoers rule
-# installed by setup_rnsd.sh narrows this to the exact binary path).
-_LXMSENDMSG_BIN = _RNSD_HOME / ".local" / "bin" / "lxmsendmsg"
+# The upstream lxmf pip package ships only the lxmd daemon, no send
+# CLI. We bundle our own tiny sender at scripts/lxmf_send.py and
+# invoke it via `sudo -u <rnsd_user>` (the sudoers rule installed by
+# setup_rnsd.sh narrows this to exactly this script path).
+_LXMF_SEND_SCRIPT = Path("/opt/meshpoint/scripts/lxmf_send.py")
 # Append-only log of messages WE sent, so the inbox endpoint can show
 # both directions in a thread view. lxmd's messagestore is inbox-only --
 # lxmsendmsg doesn't leave a local trace of what we sent.
@@ -376,14 +377,16 @@ async def send_message(body: SendMessageBody) -> dict:
     operators will need the lxmsendmsg stderr to diagnose routing
     issues (unreachable destination, no path, etc.).
     """
+    # Positional args to lxmf_send.py: <destination_hash> <content>
+    # plus optional --title. We pass the script path explicitly (not
+    # via PATH) because the sudoers rule pins it -- any other path
+    # would 403 with "command not allowed by sudoers."
     cmd = [
-        "sudo", "-n", "-u", _RNSD_USER, str(_LXMSENDMSG_BIN),
+        "sudo", "-n", "-u", _RNSD_USER, str(_LXMF_SEND_SCRIPT),
         body.destination_hash, body.content,
     ]
     if body.title:
-        # lxmsendmsg uses --title for the optional subject line.
-        cmd.insert(-2, "--title")
-        cmd.insert(-2, body.title)
+        cmd.extend(["--title", body.title])
 
     try:
         result = subprocess.run(
@@ -402,15 +405,19 @@ async def send_message(body: SendMessageBody) -> dict:
         )
 
     if result.returncode != 0:
-        # Common causes: sudoers rule missing/broken (returncode 1,
-        # stderr "a password is required"), lxmsendmsg not installed,
-        # destination unreachable. Pass through the actual error so
-        # the frontend can show something diagnostic.
+        # Common causes: sudoers rule missing/broken (rc=1, stderr
+        # "a password is required"); lxmf_send.py couldn't reach
+        # destination (rc=2); send timed out waiting for state=SENT
+        # (rc=3); unexpected exception inside the sender (rc=4).
+        # Pass through the actual error so the frontend can show
+        # something diagnostic.
         stderr = (result.stderr or result.stdout or "").strip()
-        logger.warning("lxmsendmsg failed (rc=%d): %s", result.returncode, stderr)
+        logger.warning(
+            "lxmf_send.py failed (rc=%d): %s", result.returncode, stderr,
+        )
         raise HTTPException(
             status_code=502,
-            detail=f"lxmsendmsg failed: {stderr[:500]}" or "lxmsendmsg failed",
+            detail=f"send failed: {stderr[:500]}" or "send failed",
         )
 
     sent_at = datetime.now(tz=timezone.utc)

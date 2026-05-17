@@ -123,16 +123,22 @@ else
 fi
 
 # Phase 2 #3: sudoers rule so the meshpoint dashboard user can invoke
-# lxmsendmsg as the rnsd user (typically mp) for the send endpoint.
+# scripts/lxmf_send.py as the rnsd user (typically mp) for the send
+# endpoint. The upstream lxmf pip package does NOT ship a standalone
+# send CLI -- only the lxmd daemon -- so we wrap our own tiny sender
+# script (which DOES import LXMF, but stays in the mp user's venv,
+# preserving the decoupling rule we set in #1+#2).
+#
 # Render template -> tmpfile -> visudo -cf validate -> install.
 # We validate BEFORE moving into place because a broken file in
 # /etc/sudoers.d/ can lock the box out of sudo entirely.
 SUDOERS_TEMPLATE="$TEMPLATE_DIR/meshpoint-lxmf.sudoers"
-LXMSENDMSG_BIN="$USER_HOME/.local/bin/lxmsendmsg"
-if [ -f "$SUDOERS_TEMPLATE" ] && [ -x "$LXMSENDMSG_BIN" ]; then
+SEND_SCRIPT="$REPO_DIR/scripts/lxmf_send.py"
+if [ -f "$SUDOERS_TEMPLATE" ] && [ -f "$SEND_SCRIPT" ]; then
+    sudo chmod 755 "$SEND_SCRIPT"
     SUDOERS_TMP="$(mktemp)"
     sed -e "s|__USER__|$INVOKING_USER|g" \
-        -e "s|__LXMSENDMSG__|$LXMSENDMSG_BIN|g" \
+        -e "s|__LXMSENDMSG__|$SEND_SCRIPT|g" \
         "$SUDOERS_TEMPLATE" > "$SUDOERS_TMP"
     if sudo visudo -cf "$SUDOERS_TMP" >/dev/null; then
         info "Installing /etc/sudoers.d/meshpoint-lxmf"
@@ -142,8 +148,8 @@ if [ -f "$SUDOERS_TEMPLATE" ] && [ -x "$LXMSENDMSG_BIN" ]; then
         warn "Rendered sudoers failed visudo -cf -- NOT installing (send endpoint will 403)"
     fi
     rm -f "$SUDOERS_TMP"
-elif [ ! -x "$LXMSENDMSG_BIN" ]; then
-    warn "lxmsendmsg not found at $LXMSENDMSG_BIN -- skipping sudoers rule"
+elif [ ! -f "$SEND_SCRIPT" ]; then
+    warn "$SEND_SCRIPT missing -- skipping sudoers rule (send endpoint will 403)"
 fi
 
 # Phase 2 #3: meshpoint writes its sent-message log to /opt/meshpoint/data

@@ -101,21 +101,33 @@ INBOX_JSON = HOME / ".lxmd" / "inbox.json"
 def _decode_one(path: Path) -> dict | None:
     """Decode a single .lxm file into a flat dict, or None on failure.
 
-    We use LXMF.LXMessage.unpack_from_bytes which handles whatever
-    on-disk format lxmd produces. Failures (truncated file, schema
-    drift, permission flip) are logged at DEBUG and skipped so a
-    single bad message doesn't take down the whole snapshot.
+    The lxmd messagestore writes each message in the LXMRouter's
+    on-disk format, which is read back via `LXMessage.unpack_from_file`
+    -- NOT `unpack_from_bytes` (that one expects the raw wire format,
+    which is different). The function takes a file HANDLE, not a path.
+
+    Failure mode worth knowing: unpack_from_file swallows its own
+    decode exceptions internally, logs them to RNS's logger, and
+    returns an LXMessage with all-None fields. We detect that by
+    checking source_hash post-unpack and treat a None-source message
+    as a decode failure -- otherwise we'd silently surface empty
+    rows in the dashboard inbox.
     """
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as f:
+            msg = LXMF.LXMessage.unpack_from_file(f)
     except OSError as exc:
         logger.debug("read failed for %s: %s", path.name, exc)
         return None
-
-    try:
-        msg = LXMF.LXMessage.unpack_from_bytes(raw)
     except Exception as exc:  # noqa: BLE001 - LXMF can raise many things
-        logger.debug("LXMF decode failed for %s: %s", path.name, exc)
+        logger.debug("LXMF decode raised for %s: %s", path.name, exc)
+        return None
+
+    # unpack_from_file returns an empty-shell LXMessage on internal
+    # failure (RNS logs the real error but doesn't propagate it).
+    # source_hash being None is our signal that the file didn't decode.
+    if msg is None or getattr(msg, "source_hash", None) is None:
+        logger.debug("LXMF decode returned empty object for %s", path.name)
         return None
 
     # LXMF fields are bytes; coerce to hex strings / utf-8 text for JSON.

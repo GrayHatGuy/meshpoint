@@ -132,6 +132,37 @@ async def get_status() -> dict:
     }
 
 
+@router.get("/peer_map")
+async def get_peer_map() -> dict:
+    """Return the FULL peer enrichment map (Phase 1 #1).
+
+    Unlike /peers (which is bounded to recently-heard announces),
+    this returns every hash the sidecar's classifier has ever
+    processed -- the same content as ~/.lxmd/lxmf_peers.json's
+    `peers` dict.
+
+    Used by the Dashboard Packets renderer to substitute display
+    names + class badges for Reticulum packet source/dest hashes
+    retroactively (the address book is a presentation layer; old
+    packets render new names as soon as the classifier sees them).
+    """
+    return {
+        "peers": _read_peers_enrichment(),
+        "generated_at": _peers_generated_at(),
+    }
+
+
+def _peers_generated_at() -> Optional[str]:
+    """Expose the sidecar's last peers.json write time for the UI."""
+    try:
+        with _PEERS_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        gen = payload.get("generated_at")
+        return gen if isinstance(gen, str) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 @router.get("/peers")
 async def get_peers(limit: int = 50) -> dict:
     """Recently-heard Reticulum destinations from rnsd announces.

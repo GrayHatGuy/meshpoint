@@ -129,9 +129,21 @@ class RnodeDecoder:
         if payload:
             decoded["payload_hex_preview"] = payload[:16].hex()
 
+        # Source extraction:
+        # - ANNOUNCE packets broadcast the announcer's OWN destination,
+        #   so source == dest. The dashboard can therefore look up the
+        #   announcer in lxmf_peers.json and surface their display_name
+        #   in the Source column instead of literal "unknown".
+        # - All other packet types carry no source field in the LoRa
+        #   frame header (it lives inside the encrypted payload), so
+        #   "unknown" is the most honest value. The frontend renders
+        #   that as the operator-facing "unknown" placeholder rather
+        #   than chopping it as if it were an 8-char Meshtastic node id.
+        source_id = dest_hash if packet_type == _PTYPE_ANNOUNCE else "unknown"
+
         return Packet(
             packet_id=uuid4().hex[:8],
-            source_id="unknown",
+            source_id=source_id,
             destination_id=dest_hash,
             protocol=Protocol.RETICULUM,
             packet_type=pkt_type,

@@ -1,0 +1,21 @@
+[Unit]
+Description=Reticulum Network Stack Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# __USER__ and __EXEC__ are placeholders substituted by setup_rnsd.sh
+# during install so this template stays valid for different system
+# usernames and Python install layouts (user pip vs venv vs system).
+User=__USER__
+Group=__USER__
+ExecStart=__EXEC__
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

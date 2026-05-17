@@ -1,0 +1,54 @@
+# Minimal working Reticulum (rnsd) config for a Meshpoint Pi that uses
+# its USB RNode as the LoRa interface for Reticulum messaging.
+#
+# This file gets copied to ~/.reticulum/config on first install.
+# After install you can hand-edit it; the setup script will not
+# overwrite an existing config.
+#
+# Key choices made here:
+#   - enable_transport = Yes   (required for RNS to propagate announces
+#                               from the local LXMF router out to LoRa)
+#   - mode = full              (interface participates fully in routing
+#                               instead of acting as an access point)
+#   - share_instance = Yes     (rnsd exposes a local socket so lxmd and
+#                               other RNS-aware programs on this Pi can
+#                               attach without spinning up their own
+#                               instance of the radio)
+#
+# The AutoInterface (LAN multicast) is intentionally omitted because
+# Meshpoint deployments typically only use the RNode for LoRa-based
+# Reticulum and the multicast noise on a shared LAN can flood the
+# rnsd log with peering-auth-mismatch debug lines. Re-add it manually
+# if you want IP-based Reticulum peering on top.
+
+[reticulum]
+  enable_transport = Yes
+  share_instance = Yes
+  instance_name = meshpoint
+  shared_instance_port = 37428
+  instance_control_port = 37429
+
+[logging]
+  # 0=critical .. 4=info .. 7=extreme. 4 is the sane default; bump to
+  # 7 temporarily when diagnosing announce-propagation or peering bugs.
+  loglevel = 4
+
+[interfaces]
+
+  [[Meshpoint RNode USB]]
+    type = RNodeInterface
+    interface_enabled = True
+    # USB serial port the RNode appears on. Numbering is NOT stable
+    # across reboots when multiple USB serial devices are present --
+    # if you see "Could not detect device" in the rnsd log after a
+    # reboot, check `ls /dev/ttyUSB*` and update this line, OR add a
+    # udev rule to give the RNode a stable symlink such as /dev/rnode.
+    port = /dev/ttyUSB0
+    # Reticulum US network defaults. Adjust to match your network.
+    frequency = 914875000
+    bandwidth = 125000
+    txpower = 22
+    spreadingfactor = 8
+    codingrate = 5
+    flow_control = False
+    mode = full

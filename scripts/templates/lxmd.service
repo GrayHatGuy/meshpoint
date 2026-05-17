@@ -1,0 +1,25 @@
+[Unit]
+Description=LXMF Daemon
+After=rnsd.service
+Requires=rnsd.service
+# PartOf ties lxmd's lifecycle to rnsd's: when rnsd restarts, lxmd
+# stops AND restarts with it. Without PartOf, a `systemctl restart
+# rnsd` leaves lxmd alive but disconnected from the (now-different)
+# rnsd instance, which manifests as silently broken messaging.
+PartOf=rnsd.service
+
+[Service]
+Type=simple
+# __USER__ and __EXEC__ are placeholders substituted by setup_rnsd.sh
+# during install -- see the matching note in rnsd.service.
+User=__USER__
+Group=__USER__
+ExecStart=__EXEC__
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

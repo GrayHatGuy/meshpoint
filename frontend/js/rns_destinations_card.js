@@ -49,9 +49,9 @@ class RnsDestinationsCard {
             </div>
             <p class="r-hint">
                 Reticulum's "channels" are destinations: each row is an
-                identity hash heard on the air. The local node will appear
-                here once Tier 2 provisions a Reticulum identity for this
-                Meshpoint.
+                identity hash heard on the air. Row 0 is this Meshpoint's
+                own LXMF address; subsequent rows are peers that have
+                broadcast an announce within the last 24 hours.
             </p>
         `;
         this._wire();

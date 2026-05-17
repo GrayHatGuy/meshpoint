@@ -55,12 +55,15 @@ _RNSD_HOME = Path(f"/home/{_RNSD_USER}")
 _LXMD_CONFIG = _RNSD_HOME / ".lxmd" / "config"
 _KNOWN_DESTINATIONS = _RNSD_HOME / ".reticulum" / "storage" / "known_destinations"
 
-# Cap how much journal history we read per request. ~5 minutes of
-# announce traffic on a typical mesh is well under 200 lines; we use
-# a larger window for the address-extraction call since lxmd may have
-# logged "ready to receive" hours ago.
-_ANNOUNCE_JOURNAL_SINCE = "1 hour ago"
-_IDENTITY_JOURNAL_SINCE = "7 days ago"
+# Cap how much journal history we read per request.
+# Reticulum announces typically fire every few hours per destination,
+# so 1 hour was too tight -- a quiet network would show zero peers
+# even though they were just heard. 24 hours gives a one-day rolling
+# view of the LoRa neighborhood, which is what operators expect from
+# a "recently heard" peer list. The lxmd ready-to-receive line is
+# emitted only at process start, so we keep a wider window for that.
+_ANNOUNCE_JOURNAL_SINCE = "24 hours ago"
+_IDENTITY_JOURNAL_SINCE = "30 days ago"
 
 # Subprocess timeouts. The whole point of read-only endpoints is they
 # return fast; a stalled journalctl or rnstatus should never block the

@@ -488,16 +488,21 @@ async def _watch_lxmf_artifacts() -> None:
     from src.api.routes.reticulum import inbox_artifact_mtimes
     import asyncio
 
-    last_inbox_mt, last_sent_mt = inbox_artifact_mtimes()
+    last_mt = inbox_artifact_mtimes()
     while True:
         try:
             await asyncio.sleep(2.0)
-            inbox_mt, sent_mt = inbox_artifact_mtimes()
-            if inbox_mt != last_inbox_mt or sent_mt != last_sent_mt:
-                last_inbox_mt, last_sent_mt = inbox_mt, sent_mt
+            cur_mt = inbox_artifact_mtimes()
+            if cur_mt != last_mt:
+                last_mt = cur_mt
+                inbox_mt, sent_mt, peers_mt = cur_mt
                 await ws_manager.broadcast(
                     "lxmf_inbox_changed",
-                    {"inbox_mtime": inbox_mt, "sent_mtime": sent_mt},
+                    {
+                        "inbox_mtime": inbox_mt,
+                        "sent_mtime":  sent_mt,
+                        "peers_mtime": peers_mt,
+                    },
                 )
         except asyncio.CancelledError:
             raise

@@ -62,6 +62,11 @@ _KNOWN_DESTINATIONS = _RNSD_HOME / ".reticulum" / "storage" / "known_destination
 # inbox.json is written by the lxmf_inbox_dump.py sidecar (runs as the
 # _RNSD_USER, inotify-driven). We only READ it here -- never write.
 _INBOX_JSON = _RNSD_HOME / ".lxmd" / "inbox.json"
+# Phase 1 #2: lxmf_peers.json is written by the SAME sidecar on a 60s
+# periodic enrichment pass. Maps every known hash -> {display_name,
+# class, is_lxmf, app_data_hex}. Used to substitute friendly names
+# into /api/reticulum/peers and /api/reticulum/inbox responses.
+_PEERS_JSON = _RNSD_HOME / ".lxmd" / "lxmf_peers.json"
 # The upstream lxmf pip package ships only the lxmd daemon, no send
 # CLI. We bundle our own tiny sender at scripts/lxmf_send.py and
 # invoke it via `sudo -u <rnsd_user>` (the sudoers rule installed by
@@ -134,8 +139,20 @@ async def get_peers(limit: int = 50) -> dict:
     Each peer entry is the most-recent announce seen for that hash
     within the last hour. Older entries are pruned naturally because
     we only scan a bounded journal window.
+
+    Enriched with display_name + class + is_lxmf from the sidecar's
+    lxmf_peers.json when available. Peers missing from that JSON
+    (e.g., heard for the first time in the last few seconds, before
+    the sidecar's 60s enrich tick) get null fields rather than
+    being omitted -- the UI can still show the hash.
     """
     peers = _parse_recent_announces(limit=limit)
+    enrich = _read_peers_enrichment()
+    for p in peers:
+        meta = enrich.get(p.get("hash") or "", {})
+        p["display_name"] = meta.get("display_name")
+        p["class"]        = meta.get("class") or "unknown"
+        p["is_lxmf"]      = bool(meta.get("is_lxmf"))
     return {"peers": peers, "count": len(peers)}
 
 
@@ -478,29 +495,41 @@ async def get_inbox(limit: int = 500) -> dict:
     """
     received = _read_inbox_json()
     sent = _read_sent_log()
+    enrich = _read_peers_enrichment()
+
+    def _peer_meta(h: str) -> dict:
+        m = enrich.get(h, {})
+        return {
+            "peer_display_name": m.get("display_name"),
+            "peer_class":        m.get("class") or "unknown",
+        }
 
     merged: list[dict] = []
 
     for m in received:
+        peer = m.get("source_hash") or ""
         merged.append({
             "direction":        "in",
             "hash":             m.get("hash") or "",
-            "peer_hash":        m.get("source_hash") or "",
+            "peer_hash":        peer,
             "title":            m.get("title") or "",
             "content":          m.get("content") or "",
             "timestamp":        m.get("timestamp"),
             "iso":              m.get("received_iso"),
+            **_peer_meta(peer),
         })
 
     for s in sent:
+        peer = s.get("destination_hash") or ""
         merged.append({
             "direction":        "out",
             "hash":             "",  # we don't get one back from lxmsendmsg
-            "peer_hash":        s.get("destination_hash") or "",
+            "peer_hash":        peer,
             "title":            s.get("title") or "",
             "content":          s.get("content") or "",
             "timestamp":        s.get("timestamp"),
             "iso":              s.get("sent_iso"),
+            **_peer_meta(peer),
         })
 
     # Newest-first.
@@ -513,6 +542,24 @@ async def get_inbox(limit: int = 500) -> dict:
         "count":    len(merged),
         "inbox_generated_at": _inbox_generated_at(),
     }
+
+
+def _read_peers_enrichment() -> dict:
+    """Return the {hash: {display_name, class, is_lxmf, ...}} map
+    from lxmf_peers.json.
+
+    Returns {} on any error so endpoints degrade gracefully -- a
+    missing/broken enrichment file just means the API serves
+    hashes without display_names, never 500s.
+    """
+    try:
+        with _PEERS_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        peers = payload.get("peers", {})
+        return peers if isinstance(peers, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("lxmf_peers.json read failed: %s", exc)
+        return {}
 
 
 def _read_inbox_json() -> list[dict]:
@@ -573,20 +620,25 @@ def _read_sent_log() -> list[dict]:
 # ── Watch hooks for server.py's WebSocket broadcaster ────────────────
 
 
-def inbox_artifact_mtimes() -> tuple[float, float]:
-    """Return (inbox.json mtime, sent log mtime). Used by the server's
-    background watcher task to decide when to broadcast a refresh.
+def inbox_artifact_mtimes() -> tuple[float, float, float]:
+    """Return (inbox.json mtime, sent log mtime, peers.json mtime).
 
-    Either path can be missing on a fresh install; we return 0.0 for
-    a missing file so the watcher's "changed?" check just sees the
-    transition from 0.0 -> first-real-mtime as a single change event.
+    Used by the server's background watcher task to decide when to
+    broadcast a refresh over the WebSocket. Any of the three paths
+    can be missing on a fresh install; we return 0.0 for a missing
+    file so the watcher's "changed?" check sees the transition from
+    0.0 -> first-real-mtime as a single change event.
+
+    peers.json was added in Phase 1 #2 so display-name auto-discovery
+    propagates to connected dashboards without waiting for the 30s
+    poll fallback.
     """
     def _mtime(p: Path) -> float:
         try:
             return p.stat().st_mtime
         except OSError:
             return 0.0
-    return (_mtime(_INBOX_JSON), _mtime(_SENT_LOG))
+    return (_mtime(_INBOX_JSON), _mtime(_SENT_LOG), _mtime(_PEERS_JSON))
 
 
 def _journal_ts_to_iso(ts: str) -> Optional[str]:

@@ -1,49 +1,64 @@
 #!/usr/bin/env python3
-"""LXMF inbox -> JSON snapshot daemon.
+"""LXMF inbox + peer-classification snapshot daemon.
 
-Runs as the user that owns ~/.lxmd (typically `mp`). Watches the lxmd
-messagestore for new `.lxm` files via Linux inotify, and on every
-change rewrites ~/.lxmd/inbox.json with a flat, decoded view of every
-message currently in the store.
+Runs as the user that owns ~/.lxmd (typically `mp`). Does two jobs in
+one process:
 
-The Meshpoint dashboard (running as a different user, `meshpoint`)
-then reads inbox.json -- it never imports LXMF itself. This is the
-same decoupling rule we used for /api/reticulum/peers (journal scrape
-instead of `import RNS`): keep the heavy messaging stack confined to
-the mp user's venv so dashboard upgrades don't pin LXMF versions and
-vice-versa.
+  1. INBOX (event-driven) -- watches ~/.lxmd/storage/messages/ via
+     kernel inotify and rewrites ~/.lxmd/inbox.json atomically on
+     every CREATE/MOVED_TO/DELETE event. Decodes each .lxm file via
+     LXMF.LXMessage.unpack_from_file and emits a flat dict per
+     message. Sub-second latency, zero CPU when idle.
 
-JSON schema written to inbox.json:
+  2. PEERS (periodic, every 60s) -- walks the UNION of:
+       - ~/.reticulum/storage/cache/announces/  (every announce
+         rnsd has ever cached -- one file per hash, comprehensive)
+       - the rnsd journal (recent announces with their via-relay
+         info, used to populate the relay-detection set)
+     For each hash, calls RNS.Identity.recall_app_data and
+     classifies the peer (lxmf / propagation / relay / rns_service
+     / transport / unknown), extracting the display_name from
+     LXMF announces. Result is written to ~/.lxmd/lxmf_peers.json.
+
+Both outputs feed the Meshpoint dashboard, which reads the JSON
+files but never imports RNS or LXMF itself -- preserves the
+decoupling rule we set in Phase 2 #1+#2.
+
+JSON schemas:
+
+  inbox.json
     {
-        "generated_at": "<iso8601 utc>",
-        "messages": [
-            {
-                "hash":             "<hex>",
-                "source_hash":      "<hex>",
-                "destination_hash": "<hex>",
-                "title":            "<utf-8 string or empty>",
-                "content":          "<utf-8 string>",
-                "timestamp":        <float unix epoch>,
-                "received_iso":     "<iso8601 utc>"
-            },
-            ...
-        ]
+      "generated_at": "<iso8601 utc>",
+      "messages": [
+        {hash, source_hash, destination_hash, title, content,
+         timestamp, received_iso},
+        ...
+      ]
     }
 
-A new snapshot is written:
-  * once on startup (so the file exists even if no events have fired),
-  * on every CREATE / MOVED_TO event under the messagestore dir,
-  * never on a timer -- pure event-driven, sleeps in the kernel
-    when idle (zero CPU).
+  lxmf_peers.json
+    {
+      "generated_at": "<iso8601 utc>",
+      "peers": {
+        "<hex_hash>": {
+          "display_name": "<str or null>",
+          "class":        "lxmf" | "propagation" | "relay"
+                        | "rns_service" | "transport" | "unknown",
+          "app_data_hex": "<hex or null>",
+          "is_lxmf":      true | false
+        },
+        ...
+      }
+    }
 
 Operational notes:
-  * The output file is written atomically (tmpfile + os.replace) so
-    readers never see a half-written JSON document.
-  * If a single `.lxm` file fails to decode (truncated, format change,
-    permissions), we log and skip it -- one bad message must never
-    poison the whole snapshot.
-  * inotify only fires on direct contents of the watched dir. If lxmd
-    ever moves to a nested layout, the watch list needs to expand.
+  * Both output files written atomically (tmpfile + os.replace) so
+    dashboard readers never see a half-written JSON document.
+  * Decode failures on individual messages or peers log at DEBUG
+    and skip -- one bad row never poisons the whole snapshot.
+  * inotify only fires on direct contents of the watched dir. If
+    lxmd ever moves to a nested layout, the watch list needs to
+    expand.
 """
 
 from __future__ import annotations
@@ -81,6 +96,16 @@ except ImportError:
     )
     sys.exit(1)
 
+# RNS is used ONLY by the peer enrichment job (recall_app_data /
+# recall identity from the running rnsd's shared-instance cache).
+# We attach lazily inside the enrich function so a missing/broken
+# RNS install doesn't prevent the inbox job from working.
+try:
+    import RNS  # type: ignore
+    _RNS_AVAILABLE = True
+except ImportError:
+    _RNS_AVAILABLE = False
+
 
 logging.basicConfig(
     level=os.environ.get("LXMF_DUMP_LOGLEVEL", "INFO"),
@@ -95,7 +120,24 @@ HOME = Path(os.path.expanduser("~"))
 # named "messages" on disk). Verified by inspecting an in-use lxmd
 # install on Pi OS Bookworm.
 MESSAGESTORE_DIR = HOME / ".lxmd" / "storage" / "messages"
-INBOX_JSON = HOME / ".lxmd" / "inbox.json"
+INBOX_JSON       = HOME / ".lxmd" / "inbox.json"
+
+# Peer enrichment artifacts. The announce cache holds one file per
+# hash rnsd has ever heard -- the filename is the hash. We union
+# that set with hashes seen in the journal (last 24h) to compute
+# the via-relay map.
+ANNOUNCE_CACHE_DIR = HOME / ".reticulum" / "storage" / "cache" / "announces"
+PEERS_JSON         = HOME / ".lxmd" / "lxmf_peers.json"
+
+# How often the peer enricher runs. 60s is a good balance: announces
+# don't change minute-to-minute, but waiting 5+ minutes would mean
+# operators see stale class/display-name data after a new peer arrives.
+PEER_ENRICH_INTERVAL_SEC = 60.0
+
+# Bound the size of an LXMF display_name we'll accept from app_data.
+# Anything longer is almost certainly not a real name (binary garbage
+# that happens to decode as printable UTF-8).
+_MAX_DISPLAY_NAME_LEN = 64
 
 
 def _decode_one(path: Path) -> dict | None:
@@ -165,33 +207,10 @@ def _decode_one(path: Path) -> dict | None:
 
 
 def _write_atomic(payload: dict) -> None:
-    """Write inbox.json atomically so readers never see a partial file.
-
-    Strategy: serialize to a tmpfile in the same directory (so
-    os.replace is a same-filesystem rename), chmod 644 so the
-    meshpoint user can read it, then atomic-rename onto the final
-    path. Old readers either see the previous full file or the new
-    full file -- never a half-written one.
-    """
-    INBOX_JSON.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=".inbox.", suffix=".json.tmp", dir=str(INBOX_JSON.parent),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
-        # World-readable so the meshpoint user can fetch it without
-        # needing to chmod the whole .lxmd dir.
-        os.chmod(tmp_path, 0o644)
-        os.replace(tmp_path, INBOX_JSON)
-    except Exception:
-        # Best-effort cleanup; we don't want orphan tmpfiles piling up
-        # if the rename failed for some weird reason.
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    """Write inbox.json atomically -- delegates to the path-generic
+    _write_atomic_path defined below so both outputs share the same
+    "tmpfile + chmod + rename" sequence."""
+    _write_atomic_path(INBOX_JSON, payload)
 
 
 def dump_inbox() -> int:
@@ -224,6 +243,264 @@ def dump_inbox() -> int:
     return len(messages)
 
 
+# ── Peer enrichment ─────────────────────────────────────────────
+
+
+_VIA_RE = __import__("re").compile(
+    r"Valid announce for <[0-9a-f]+>\s+\d+\s+hops?\s+away,\s+received\s+via\s+<([0-9a-f]+)>"
+)
+# Same shape as the regex in src/api/routes/reticulum.py but extracts
+# only the `via` hash. Kept inline (not imported from meshpoint) so
+# the sidecar stays standalone.
+
+
+def _decode_lxmf_name(app_data) -> str | None:
+    """Pull a display_name out of an LXMF announce's app_data.
+
+    Two formats observed in the wild:
+
+      Format A (newer MeshChat, etc):
+        msgpack array of 2 -- [display_name_bytes, propagation_node_or_nil]
+        On the wire: \\x92 \\xc4 <len> <name_bytes...> \\xc0
+        We decode by hand to avoid pulling in a msgpack dep.
+
+      Format B (older clients, or raw):
+        just the display_name as UTF-8 bytes, no wrapper.
+
+    Returns the decoded name (str) or None if app_data doesn't match
+    either pattern OR the decoded text looks like garbage.
+    """
+    if not isinstance(app_data, (bytes, bytearray)) or len(app_data) == 0:
+        return None
+
+    # Format A: \x92 (fixarray of 2) \xc4 (bin8) <len> <name> ...
+    if len(app_data) >= 4 and app_data[0] == 0x92 and app_data[1] == 0xc4:
+        name_len = app_data[2]
+        if 0 < name_len <= _MAX_DISPLAY_NAME_LEN \
+                and len(app_data) >= 3 + name_len:
+            try:
+                name = bytes(app_data[3:3 + name_len]).decode("utf-8")
+                if name.isprintable():
+                    return name
+            except UnicodeDecodeError:
+                pass  # fall through to Format B
+
+    # Format B: raw UTF-8 bytes.
+    if len(app_data) <= _MAX_DISPLAY_NAME_LEN:
+        try:
+            name = bytes(app_data).decode("utf-8")
+            if name.isprintable() and len(name) >= 1:
+                return name
+        except UnicodeDecodeError:
+            pass
+
+    return None
+
+
+def _classify_peer(hex_hash: str, app_data, identity, via_set: set) -> dict:
+    """Return {class, display_name} for a single hash.
+
+    Detection order matters -- LXMF must be checked before the
+    "structured app_data => propagation" branch, because an LXMF
+    display_name happens to be structured msgpack in Format A.
+    """
+    # 1. LXMF endpoint? (Format A or B yields a display_name)
+    name = _decode_lxmf_name(app_data)
+    if name is not None:
+        return {"class": "lxmf", "display_name": name}
+
+    # 2. Propagation node? Empirically these announce with a
+    #    msgpack fixarray of ~7 numeric elements (capacity, cost,
+    #    limits...). The leading byte 0x97 = array-of-7.
+    if isinstance(app_data, (bytes, bytearray)) and len(app_data) >= 1:
+        first = app_data[0]
+        # 0x90..0x9f = fixarray of N elements; arrays of 4+ all-numeric
+        # elements are characteristic of LXMF propagation announces.
+        if 0x94 <= first <= 0x9f:
+            return {"class": "propagation", "display_name": None}
+
+    # 3. Relay? No LXMF/propagation classification but appears as a
+    #    `via` target for at least one other announce.
+    if hex_hash in via_set:
+        return {"class": "relay", "display_name": None}
+
+    # 4. RNS service: we have an identity AND some non-empty app_data
+    #    that we couldn't classify. Means it's announcing SOMETHING
+    #    (Nomadnet page, NSE service, custom) -- just not LXMF.
+    if identity is not None and isinstance(app_data, (bytes, bytearray)) \
+            and len(app_data) > 0:
+        return {"class": "rns_service", "display_name": None}
+
+    # 5. Transport: no identity cached. Typically a multi-hop
+    #    intermediary we've only ever seen as a `via` hash.
+    if identity is None:
+        return {"class": "transport", "display_name": None}
+
+    # 6. Anything else.
+    return {"class": "unknown", "display_name": None}
+
+
+def _journal_via_set() -> set:
+    """Scrape the last 24h of rnsd journal for `received via <hash>`.
+
+    Each hash that appears as a relay target is added to the set.
+    Used by the classifier to mark transport nodes that are actively
+    relaying traffic (vs. silent transport hashes we've never seen
+    in action).
+    """
+    import subprocess
+    via: set = set()
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "rnsd.service", "--no-pager",
+             "--since", "24 hours ago"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        for line in result.stdout.splitlines():
+            m = _VIA_RE.search(line)
+            if m:
+                via.add(m.group(1))
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.debug("journalctl scrape for via-set failed: %s", exc)
+    return via
+
+
+def _collect_candidate_hashes() -> list:
+    """Union of announce-cache filenames + journal-mentioned hashes.
+
+    Belt and suspenders: the announce cache catches everything rnsd
+    has ever heard (deep history); the journal scrape catches the
+    same plus the via-relay info we need anyway, so it's nearly
+    free to fold in.
+    """
+    candidates: set = set()
+
+    # Announce cache: filename = hash (lowercase hex).
+    if ANNOUNCE_CACHE_DIR.is_dir():
+        try:
+            for child in ANNOUNCE_CACHE_DIR.iterdir():
+                if not child.is_file():
+                    continue
+                name = child.name.lower()
+                if len(name) >= 16 and all(c in "0123456789abcdef" for c in name):
+                    candidates.add(name)
+        except OSError as exc:
+            logger.debug("announce cache iter failed: %s", exc)
+
+    # Journal scrape: the same regex used to find via-relays also
+    # picks up the announce-target hash before "received via".
+    import subprocess, re as _re
+    target_re = _re.compile(r"Valid announce for <([0-9a-f]+)>")
+    try:
+        result = subprocess.run(
+            ["journalctl", "-u", "rnsd.service", "--no-pager",
+             "--since", "24 hours ago"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        for line in result.stdout.splitlines():
+            m = target_re.search(line)
+            if m:
+                candidates.add(m.group(1).lower())
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    return sorted(candidates)
+
+
+_rns_attached = False
+
+
+def _ensure_rns_attached() -> bool:
+    """Attach to the running rnsd via shared-instance socket (idempotent).
+
+    Called lazily on the first enrich tick so a missing RNS install
+    doesn't kill the inbox dumper. Returns True if we have a usable
+    RNS handle, False otherwise.
+    """
+    global _rns_attached
+    if not _RNS_AVAILABLE:
+        return False
+    if _rns_attached:
+        return True
+    try:
+        # No configdir => default ~/.reticulum/, which has
+        # share_instance = Yes; RNS auto-detects the running rnsd's
+        # local socket and piggybacks on it (no second radio).
+        RNS.Reticulum(loglevel=0)
+        _rns_attached = True
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not attach to RNS for enrichment: %s", exc)
+        return False
+
+
+def enrich_peers() -> int:
+    """Classify every known hash and write lxmf_peers.json.
+
+    Returns the count of classified peers (== the JSON's `peers`
+    dict length). Idempotent and bounded -- typical Pi installs
+    see hundreds of cached announces, decoded in well under a
+    second.
+    """
+    if not _ensure_rns_attached():
+        return 0
+
+    via_set = _journal_via_set()
+    candidates = _collect_candidate_hashes()
+
+    peers: dict = {}
+    for hex_hash in candidates:
+        try:
+            h = bytes.fromhex(hex_hash)
+        except ValueError:
+            continue
+        try:
+            app_data = RNS.Identity.recall_app_data(h)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("recall_app_data failed for %s: %s", hex_hash, exc)
+            app_data = None
+        try:
+            identity = RNS.Identity.recall(h)
+        except Exception:  # noqa: BLE001
+            identity = None
+
+        cls = _classify_peer(hex_hash, app_data, identity, via_set)
+        peers[hex_hash] = {
+            "display_name": cls["display_name"],
+            "class":        cls["class"],
+            "is_lxmf":      cls["class"] == "lxmf",
+            "app_data_hex": app_data.hex() if isinstance(app_data, (bytes, bytearray)) else None,
+        }
+
+    _write_atomic_path(PEERS_JSON, {
+        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "peers":        peers,
+    })
+    return len(peers)
+
+
+def _write_atomic_path(target: Path, payload: dict) -> None:
+    """Same atomic-write contract as inbox.json's _write_atomic, for
+    arbitrary target paths. Kept as a separate helper so future
+    sidecar outputs can reuse it without duplicating the dance."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix="." + target.name + ".", suffix=".tmp",
+        dir=str(target.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def main() -> int:
     # Make sure the messagestore exists -- lxmd creates it lazily on
     # first received message, so on a brand-new install the dir may
@@ -235,6 +512,19 @@ def main() -> int:
     # the inbox endpoint would 404 until the first message arrived.
     count = dump_inbox()
     logger.info("Initial snapshot: %d message(s) -> %s", count, INBOX_JSON)
+
+    # Initial peer enrichment pass. Best-effort -- if RNS isn't
+    # importable (e.g. inotify_simple installed but rns missing for
+    # some reason) we log and continue without peer enrichment.
+    try:
+        peer_count = enrich_peers()
+        logger.info("Initial peer enrichment: %d peer(s) -> %s",
+                    peer_count, PEERS_JSON)
+    except Exception:
+        logger.exception("Initial peer enrichment failed")
+
+    import time as _time
+    last_enrich = _time.time()
 
     ino = INotify()
     # CREATE catches `touch new.lxm`-style writes; MOVED_TO catches
@@ -262,23 +552,38 @@ def main() -> int:
         # read() blocks in the kernel until at least one event fires
         # OR a signal interrupts us. timeout=1000ms is a safety belt
         # so the SIGTERM handler can flip `running` and we notice
-        # within a second.
+        # within a second AND so the peer-enrich cadence check
+        # below runs roughly every second when idle.
         try:
             events = ino.read(timeout=1000)
         except InterruptedError:
             continue
-        if not events:
-            continue
-        # Coalesce: if 5 messages arrived in the same kernel batch we
-        # only need ONE re-dump, not 5.
-        try:
-            count = dump_inbox()
-            logger.info(
-                "Re-dumped after %d event(s): %d message(s)",
-                len(events), count,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Dump failed: %s", exc)
+
+        if events:
+            # Coalesce: if 5 messages arrived in the same kernel
+            # batch we only need ONE re-dump, not 5.
+            try:
+                count = dump_inbox()
+                logger.info(
+                    "Re-dumped after %d event(s): %d message(s)",
+                    len(events), count,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Dump failed: %s", exc)
+
+        # Peer enrichment cadence check. Runs every
+        # PEER_ENRICH_INTERVAL_SEC regardless of inotify activity,
+        # so a quiet messagestore doesn't starve the peers JSON.
+        now = _time.time()
+        if now - last_enrich >= PEER_ENRICH_INTERVAL_SEC:
+            last_enrich = now
+            try:
+                peer_count = enrich_peers()
+                logger.debug(
+                    "Periodic peer enrichment: %d peer(s)", peer_count,
+                )
+            except Exception:
+                logger.exception("Periodic peer enrichment failed")
 
     logger.info("Stopped")
     return 0

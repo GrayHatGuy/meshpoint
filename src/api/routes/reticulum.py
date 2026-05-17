@@ -263,6 +263,12 @@ def _parse_recent_announces(limit: int = 50) -> list[dict]:
     Returns up to ``limit`` peers, most-recent-first, de-duplicated
     per destination hash. Hops, last_heard, RSSI, SNR, and via-relay
     fields are surfaced when present in the log.
+
+    Self-announces (0 hops via LocalInterface) are filtered out -- those
+    are this node's own outbound LXMF/RNS announces echoing through the
+    local rnsd loop, NOT actual peers heard over the radio. They'd
+    otherwise show up as a confusing duplicate of "(this Meshpoint)"
+    in the destinations card.
     """
     log = _journalctl("rnsd.service", _ANNOUNCE_JOURNAL_SINCE)
     if not log:
@@ -276,11 +282,16 @@ def _parse_recent_announces(limit: int = 50) -> list[dict]:
         m = _ANNOUNCE_RE.search(line)
         if not m:
             continue
+        interface = (m.group("interface") or "").strip()
+        hops = int(m.group("hops"))
+        # Skip our own local-loopback announces.
+        if hops == 0 and interface.startswith("LocalInterface"):
+            continue
         entry = {
             "hash": m.group("hash"),
-            "hops": int(m.group("hops")),
+            "hops": hops,
             "via": m.group("via"),
-            "interface": (m.group("interface") or "").strip(),
+            "interface": interface,
             "last_heard": _journal_ts_to_iso(m.group("ts")),
             "rssi": float(m.group("rssi")) if m.group("rssi") else None,
             "snr": float(m.group("snr")) if m.group("snr") else None,

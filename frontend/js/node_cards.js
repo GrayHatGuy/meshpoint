@@ -11,6 +11,12 @@ class NodeCards {
         this._searchQuery = '';
         this._sortBy = 'last_heard';
 
+        // Phase 1 #3: protocol filter. 'all' shows everything;
+        // 'mt'/'mc'/'reticulum' filter to one stack. Stored in
+        // localStorage so the operator's last choice survives a
+        // page refresh.
+        this._protoFilter = localStorage.getItem('nc-proto-filter') || 'all';
+
         const searchEl = document.getElementById('node-search');
         if (searchEl) {
             searchEl.addEventListener('input', (e) => {
@@ -18,6 +24,43 @@ class NodeCards {
                 this._render();
             });
         }
+        this._mountFilterChips();
+    }
+
+    _mountFilterChips() {
+        // Inject the filter chip row above the container body. Done
+        // here in JS (not the static index.html) so the chips travel
+        // with whichever container this card is bound to -- keeps
+        // index.html stable.
+        if (!this._container) return;
+        const chipRow = document.createElement('div');
+        chipRow.className = 'nc-filter';
+        chipRow.innerHTML = `
+            <button class="nc-filter__chip" data-pf="all">All</button>
+            <button class="nc-filter__chip" data-pf="meshtastic">MT</button>
+            <button class="nc-filter__chip" data-pf="meshcore">MC</button>
+            <button class="nc-filter__chip" data-pf="reticulum">RNS</button>
+        `;
+        this._container.parentNode.insertBefore(chipRow, this._container);
+        chipRow.querySelectorAll('.nc-filter__chip').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                this._protoFilter = btn.dataset.pf;
+                localStorage.setItem('nc-proto-filter', this._protoFilter);
+                this._render();
+            });
+        });
+        this._chipRow = chipRow;
+        this._reflectActiveChip();
+    }
+
+    _reflectActiveChip() {
+        if (!this._chipRow) return;
+        this._chipRow.querySelectorAll('.nc-filter__chip').forEach((b) => {
+            b.classList.toggle(
+                'nc-filter__chip--active',
+                b.dataset.pf === this._protoFilter,
+            );
+        });
     }
 
     loadNodes(nodes) {
@@ -54,13 +97,21 @@ class NodeCards {
 
     _render() {
         let filtered = this._nodes;
+        // Phase 1 #3: protocol filter applied before search so the
+        // count in the empty-state message reflects the active stack.
+        if (this._protoFilter && this._protoFilter !== 'all') {
+            filtered = filtered.filter(n =>
+                (n.protocol || '').toLowerCase() === this._protoFilter
+            );
+        }
         if (this._searchQuery) {
             filtered = filtered.filter(n => {
-                const name = (n.long_name || n.short_name || '').toLowerCase();
+                const name = (n.long_name || n.short_name || n.display_name || '').toLowerCase();
                 const id = (n.node_id || '').toLowerCase();
                 return name.includes(this._searchQuery) || id.includes(this._searchQuery);
             });
         }
+        this._reflectActiveChip();
 
         if (filtered.length === 0) {
             this._container.innerHTML =
@@ -141,6 +192,19 @@ class NodeCards {
 
         if (n.latest_hops != null && n.latest_hops > 0) {
             parts.push(`<span class="nc-chip">${n.latest_hops} hop${n.latest_hops > 1 ? 's' : ''}</span>`);
+        }
+
+        // Phase 1 #3: Reticulum announce route info. `hops` here is
+        // populated by the backend from the rnsd journal (NOT the
+        // per-packet hop_limit), so it reflects how many transport
+        // relays the latest announce traversed. via= shows the first
+        // upstream relay -- useful when you have multiple gateways.
+        if ((n.protocol || '').toLowerCase() === 'reticulum' && n.hops != null) {
+            const hopLabel = n.hops === 0
+                ? 'direct'
+                : `${n.hops} hop${n.hops === 1 ? '' : 's'}`;
+            const viaSuffix = n.via ? ` via ${n.via.slice(0, 8)}…` : '';
+            parts.push(`<span class="nc-chip nc-chip--rns">${hopLabel}${viaSuffix}</span>`);
         }
 
         return parts.length

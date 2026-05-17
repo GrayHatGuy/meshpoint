@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 
 from src.analytics.network_mapper import NetworkMapper
 from src.api.routes.reticulum import (
+    get_recent_announces_map,
     read_contacts,
     read_peers_enrichment,
     resolve_display_name,
@@ -40,9 +41,10 @@ def _enrich_reticulum_nodes(nodes: list) -> list:
     60s classifier tick) get display_name=null + peer_class=unknown
     rather than being dropped, so the panel still shows them.
     """
-    enrich = read_peers_enrichment()
-    contacts = read_contacts()
-    if not enrich and not contacts:
+    enrich    = read_peers_enrichment()
+    contacts  = read_contacts()
+    announces = get_recent_announces_map()
+    if not enrich and not contacts and not announces:
         return nodes
     for n in nodes:
         if (n.get("protocol") or "").lower() != "reticulum":
@@ -67,6 +69,14 @@ def _enrich_reticulum_nodes(nodes: list) -> list:
         n["display_name_source"] = source
         n["peer_class"]          = meta.get("class") or "unknown"
         n["is_lxmf"]             = bool(meta.get("is_lxmf"))
+        # Phase 1 #3: route info (hops, via-relay, interface) from the
+        # most recent announce. Lets the Dashboard side panel render
+        # "2 hops via 58721f81..." next to RSSI without a second API
+        # round-trip. None for nodes the journal hasn't seen in 24h.
+        ann = announces.get(node_id) or {}
+        n["hops"]           = ann.get("hops")
+        n["via"]            = ann.get("via")
+        n["rns_interface"]  = ann.get("interface")
     return nodes
 
 

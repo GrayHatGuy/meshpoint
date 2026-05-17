@@ -206,6 +206,22 @@ async def get_peers(limit: int = 50) -> dict:
     return {"peers": peers, "count": len(peers)}
 
 
+def get_recent_announces_map(limit: int = 500) -> dict:
+    """Return recent announces keyed by destination hash.
+
+    Used by nodes.py to overlay route info (hops, via-relay,
+    interface) onto Reticulum nodes in the Dashboard side panel
+    without requiring the frontend to do a second fetch. Single
+    source of truth for "what's the latest path to this peer" so
+    /peers and /nodes don't disagree.
+    """
+    return {
+        p.get("hash"): p
+        for p in _parse_recent_announces(limit=limit)
+        if p.get("hash")
+    }
+
+
 # ── Internal helpers ─────────────────────────────────────────────────
 
 

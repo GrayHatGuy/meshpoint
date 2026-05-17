@@ -32,8 +32,9 @@ class RnsDestinationsCard {
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Route</th>
+                        <th>Name / Class</th>
                         <th>Destination Hash</th>
+                        <th>Route</th>
                         <th>Last Heard</th>
                         <th>RSSI</th>
                     </tr>
@@ -89,7 +90,7 @@ class RnsDestinationsCard {
             subtitle.textContent = `${peers.length} peer(s) heard`;
         } catch (e) {
             body.innerHTML = localRow + `
-                <tr><td colspan="5" class="ch-table__hash">
+                <tr><td colspan="6" class="ch-table__hash">
                     rnsd peer list unavailable (${this._esc(e.message)}).
                     Install via scripts/setup_rnsd.sh to activate.
                 </td></tr>
@@ -107,11 +108,16 @@ class RnsDestinationsCard {
             ? this._esc(this._localAddress.slice(0, 16) + '…')
             : '(loading...)';
         const title = this._localAddress ? this._esc(this._localAddress) : '';
+        // Local row gets a fixed (self) name + lxmf class -- always.
         return `
             <tr class="ch-table__row" data-local="1">
                 <td class="ch-table__idx">0</td>
-                <td><em>(this Meshpoint)</em></td>
+                <td>
+                    <em>(this Meshpoint)</em>
+                    <span class="rns-class rns-class--lxmf">lxmf</span>
+                </td>
                 <td class="ch-table__hash" title="${title}">${addr}</td>
+                <td>--</td>
                 <td>--</td>
                 <td>--</td>
             </tr>
@@ -130,25 +136,45 @@ class RnsDestinationsCard {
     }
 
     _peerRow(peer, idx) {
-        // Peer shape from /api/reticulum/peers:
-        //   { hash, hops, via, interface, last_heard, rssi, snr }
-        // Reticulum announces don't carry a friendly name in the air
-        // protocol (display names live at the LXMF layer above), so we
-        // show the hops/via column as the "name" surrogate instead.
+        // Peer shape from /api/reticulum/peers (Phase 1 #2 enrichment):
+        //   { hash, hops, via, interface, last_heard, rssi, snr,
+        //     display_name, class, is_lxmf }
+        //
+        // display_name comes from the sidecar's announce-data classifier
+        // (lxmf_peers.json). class is one of:
+        //   lxmf | propagation | relay | rns_service | transport | unknown
         const hash = peer.hash || '--';
-        const hops = peer.hops != null ? `${peer.hops} hop${peer.hops === 1 ? '' : 's'}` : '';
+        const cls = peer.class || 'unknown';
+        const name = peer.display_name;
+
+        // Name cell: prefer display_name; fall back to <em>(no name)</em>
+        // for hashes the classifier doesn't have data for yet. The class
+        // badge always renders so operators can see at a glance whether
+        // a hash is an LXMF correspondent vs a relay/transport node they
+        // can't actually message.
+        const nameCell = name
+            ? `${this._esc(name)} <span class="rns-class rns-class--${cls}">${cls}</span>`
+            : `<em class="rns-class__empty">(no name)</em> <span class="rns-class rns-class--${cls}">${cls}</span>`;
+
+        // Route: hops + via-relay summary. Previously the "Name" column,
+        // moved here so the new column ordering reads name -> hash -> route.
+        const hops = peer.hops != null
+            ? `${peer.hops} hop${peer.hops === 1 ? '' : 's'}` : '';
         const viaTag = peer.via ? ` via ${peer.via.slice(0, 8)}…` : '';
+        const routeText = (hops + viaTag).trim() || 'unknown';
+
         const lastHeard = this._fmtTime(peer.last_heard);
         const rssi = (peer.rssi != null)
-            ? `${peer.rssi.toFixed(1)} dBm`
-            : '--';
+            ? `${peer.rssi.toFixed(1)} dBm` : '--';
+
         return `
-            <tr class="ch-table__row">
+            <tr class="ch-table__row" data-class="${cls}">
                 <td class="ch-table__idx">${idx}</td>
-                <td>${this._esc(hops + viaTag) || '<em>unknown</em>'}</td>
+                <td>${nameCell}</td>
                 <td class="ch-table__hash" title="${this._esc(hash)}">
                     ${this._esc(hash.length > 16 ? hash.slice(0, 16) + '…' : hash)}
                 </td>
+                <td>${this._esc(routeText)}</td>
                 <td>${lastHeard}</td>
                 <td>${rssi}</td>
             </tr>

@@ -648,3 +648,61 @@
     .rns-msgs__thread { min-height: 280px; }
     .rns-msgs__bubble { max-width: 90%; }
 }
+
+/* ── Peer class badges (Phase 1 #2) ──────────────────────────── */
+/* Compact uppercase pill rendered next to peer names in the
+   Channels card and Messages thread header. Color-coded by class
+   so an operator can spot at a glance which neighbors are
+   addressable LXMF correspondents vs. relays / transport-only. */
+.rns-class {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    margin-left: 0.35rem;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    vertical-align: middle;
+    line-height: 1.4;
+    border: 1px solid transparent;
+}
+.rns-class--lxmf {
+    background: rgba(80, 180, 255, 0.18);
+    color: rgba(160, 220, 255, 0.95);
+    border-color: rgba(80, 180, 255, 0.35);
+}
+.rns-class--propagation {
+    background: rgba(180, 120, 255, 0.18);
+    color: rgba(220, 180, 255, 0.95);
+    border-color: rgba(180, 120, 255, 0.35);
+}
+.rns-class--relay {
+    background: rgba(255, 200, 80, 0.18);
+    color: rgba(255, 220, 140, 0.95);
+    border-color: rgba(255, 200, 80, 0.35);
+}
+.rns-class--rns_service {
+    background: rgba(120, 200, 140, 0.18);
+    color: rgba(180, 230, 200, 0.95);
+    border-color: rgba(120, 200, 140, 0.35);
+}
+.rns-class--transport,
+.rns-class--unknown {
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.55);
+    border-color: rgba(255,255,255,0.10);
+}
+.rns-class__empty {
+    color: rgba(255,255,255,0.45);
+    font-style: italic;
+}
+
+/* Short-hash chip rendered after the display name in conversation
+   rows, so two devices with the same nickname can be told apart. */
+.rns-msgs__convo-hash {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.65rem;
+    color: rgba(255,255,255,0.4);
+    margin-left: 0.3rem;
+}

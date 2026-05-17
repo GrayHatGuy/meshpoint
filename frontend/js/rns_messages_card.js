@@ -128,6 +128,14 @@ class RnsMessagesCard {
         // for direction=in it's the sender, for direction=out it's the recipient.
         // Self-messages (sent to our own hash, then echoed back via the radio)
         // collapse into a single self-thread which is useful for testing.
+        //
+        // Phase 1 #2: each message also carries peer_display_name +
+        // peer_class from the backend's enrichment. Per-conversation, we
+        // pick the FIRST non-null display_name we see (they should all
+        // match since they're for the same hash, but messages from
+        // before the classifier ran will have nulls -- prefer the named
+        // one). Stored on the conv object so renderers don't have to
+        // walk msgs[] every time.
         this._conversations.clear();
         for (const m of this._messages) {
             const peer = m.peer_hash || '';
@@ -135,12 +143,19 @@ class RnsMessagesCard {
             if (!this._conversations.has(peer)) {
                 this._conversations.set(peer, {
                     peer_hash: peer, msgs: [], latest: null,
+                    display_name: null, peer_class: null,
                 });
             }
             const conv = this._conversations.get(peer);
             conv.msgs.push(m);
             if (!conv.latest || (m.timestamp || 0) > (conv.latest.timestamp || 0)) {
                 conv.latest = m;
+            }
+            if (!conv.display_name && m.peer_display_name) {
+                conv.display_name = m.peer_display_name;
+            }
+            if (!conv.peer_class && m.peer_class) {
+                conv.peer_class = m.peer_class;
             }
         }
         // Sort each conversation's messages oldest-first for thread display.
@@ -179,8 +194,20 @@ class RnsMessagesCard {
         const isSelf = (peer === this._localAddr);
         const preview = (conv.latest.content || '').slice(0, 60);
         const dir = conv.latest.direction === 'out' ? '↑' : '↓';
-        const peerShort = peer.slice(0, 16) + '…';
-        const tag = isSelf ? '<em>(self)</em>' : this._esc(peerShort);
+        const peerShort = peer.slice(0, 12) + '…';
+
+        // Phase 1 #2: prefer the auto-discovered display_name when we
+        // have one. Always tack on the truncated hash for disambiguation
+        // because two devices can share a name (e.g., two default "4w4"
+        // installs). Self always wins regardless of announce data.
+        let tag;
+        if (isSelf) {
+            tag = '<em>(self)</em>';
+        } else if (conv.display_name) {
+            tag = `${this._esc(conv.display_name)} <span class="rns-msgs__convo-hash">${this._esc(peerShort)}</span>`;
+        } else {
+            tag = this._esc(peerShort);
+        }
         return `
             <div class="rns-msgs__convo${selected}" data-peer="${this._esc(peer)}">
                 <div class="rns-msgs__convo-head">
@@ -207,11 +234,25 @@ class RnsMessagesCard {
             return;
         }
         const isSelf = (peerHash === this._localAddr);
-        const peerLabel = isSelf ? '(self)' : peerHash;
+        // Thread header shows BOTH name + hash when we have a name,
+        // so the operator can verify they're messaging the right
+        // device when nicknames collide. Self always renders as (self).
+        let peerLabel;
+        if (isSelf) {
+            peerLabel = '(self)';
+        } else if (conv.display_name) {
+            peerLabel = `${conv.display_name}  <${peerHash}>`;
+        } else {
+            peerLabel = peerHash;
+        }
+        const classBadge = (conv.peer_class && conv.peer_class !== 'unknown')
+            ? `<span class="rns-class rns-class--${conv.peer_class}">${conv.peer_class}</span>`
+            : '';
         thread.innerHTML = `
             <div class="rns-msgs__thread-head">
                 <div class="rns-msgs__thread-peer" title="${this._esc(peerHash)}">
                     To: <span class="rns-msgs__thread-hash">${this._esc(peerLabel)}</span>
+                    ${classBadge}
                 </div>
                 <span class="rns-msgs__thread-count">${conv.msgs.length} msg(s)</span>
             </div>

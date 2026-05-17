@@ -304,10 +304,19 @@ def _extract_lxmd_display_name() -> str:
 
 
 def _parse_rnstatus() -> list[dict]:
-    """Best-effort parse of `rnstatus` text output into interface dicts."""
-    # rnstatus lives in the same bin dir as rnsd; try common locations.
-    # Each candidate check is wrapped in a try/except since `.is_file()`
-    # on a path inside another user's 700-mode home will raise.
+    """Best-effort parse of `rnstatus` text output into interface dicts.
+
+    Runs via `sudo -n -u <rnsd_user>` because RNS is only installed
+    in that user's pip --user site -- executing rnstatus directly
+    as the meshpoint service user fails with
+    ModuleNotFoundError: No module named 'RNS'. The sudoers rule
+    installed by setup_rnsd.sh narrows this to exactly the
+    rnstatus binary path.
+    """
+    # rnstatus lives in the rnsd user's local bin. Try common
+    # alternates only so the parse degrades gracefully on
+    # non-standard installs; the sudo bridge below is the path
+    # that actually works in production.
     candidates = [
         _RNSD_HOME / ".local" / "bin" / "rnstatus",
         Path("/usr/local/bin/rnstatus"),
@@ -324,13 +333,24 @@ def _parse_rnstatus() -> list[dict]:
     if binary is None:
         return []
 
+    # Invoke through sudo so we land in the rnsd user's Python
+    # environment (where RNS is importable). -n so we never
+    # prompt for a password; the sudoers grant is NOPASSWD.
+    cmd = ["sudo", "-n", "-u", _RNSD_USER, str(binary)]
     try:
         result = subprocess.run(
-            [str(binary)],
-            capture_output=True, text=True,
+            cmd, capture_output=True, text=True,
             timeout=_SUBPROC_TIMEOUT_SEC,
         )
         text = result.stdout
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            logger.debug(
+                "rnstatus exited rc=%d via sudo: %s",
+                result.returncode, stderr[:200],
+            )
+            if not text:
+                return []
     except (subprocess.TimeoutExpired, OSError) as exc:
         logger.debug("rnstatus invocation failed: %s", exc)
         return []

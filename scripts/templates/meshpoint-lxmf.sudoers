@@ -23,7 +23,7 @@
 #   - Granting via a setuid wrapper script -- harder to audit,
 #     harder to revoke, and sudoers is the standard pattern for
 #     this kind of cross-user delegation on Linux.
-meshpoint ALL=(__USER__) NOPASSWD: __LXMSENDMSG__, __LXMANNOUNCE__
+meshpoint ALL=(__USER__) NOPASSWD: __LXMSENDMSG__, __LXMANNOUNCE__, __RNSTATUS__
 # Phase 1 #6b: "Restart Stack" button on the Radio tab status card
 # triggers `sudo systemctl restart rnsd.service`. lxmd cascades via
 # its PartOf=rnsd.service declaration so we only need the one

@@ -135,19 +135,26 @@ fi
 SUDOERS_TEMPLATE="$TEMPLATE_DIR/meshpoint-lxmf.sudoers"
 SEND_SCRIPT="$REPO_DIR/scripts/lxmf_send.py"
 ANNOUNCE_SCRIPT="$REPO_DIR/scripts/lxmf_announce.py"
+# Phase 1 #6b: rnstatus binary path (lives in the rnsd user's pip
+# --user install). Meshpoint shells out via sudo so the Stack
+# Status card can decode the per-interface fields -- running
+# rnstatus directly as the meshpoint user fails with
+# ModuleNotFoundError because RNS only exists in mp's venv.
+RNSTATUS_BIN="$USER_HOME/.local/bin/rnstatus"
 if [ -f "$SUDOERS_TEMPLATE" ] && [ -f "$SEND_SCRIPT" ] && [ -f "$ANNOUNCE_SCRIPT" ]; then
     sudo chmod 755 "$SEND_SCRIPT" "$ANNOUNCE_SCRIPT"
     SUDOERS_TMP="$(mktemp)"
     sed -e "s|__USER__|$INVOKING_USER|g" \
         -e "s|__LXMSENDMSG__|$SEND_SCRIPT|g" \
         -e "s|__LXMANNOUNCE__|$ANNOUNCE_SCRIPT|g" \
+        -e "s|__RNSTATUS__|$RNSTATUS_BIN|g" \
         "$SUDOERS_TEMPLATE" > "$SUDOERS_TMP"
     if sudo visudo -cf "$SUDOERS_TMP" >/dev/null; then
         info "Installing /etc/sudoers.d/meshpoint-lxmf"
         sudo install -o root -g root -m 0440 \
             "$SUDOERS_TMP" /etc/sudoers.d/meshpoint-lxmf
     else
-        warn "Rendered sudoers failed visudo -cf -- NOT installing (send/announce will 403)"
+        warn "Rendered sudoers failed visudo -cf -- NOT installing (send/announce/rnstatus will 403)"
     fi
     rm -f "$SUDOERS_TMP"
 elif [ ! -f "$SEND_SCRIPT" ] || [ ! -f "$ANNOUNCE_SCRIPT" ]; then

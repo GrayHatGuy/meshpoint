@@ -134,6 +134,26 @@ else
     warn "Meshpoint local.yaml not found at $MESHPOINT_LOCAL; skipping auto-detect disable"
 fi
 
+# ── 5b. Make rnsd/lxmd artifacts readable by the meshpoint user ──────
+# Meshpoint's /api/reticulum/* shim needs to read the lxmd config and
+# execute rnstatus from the rnsd user's $HOME. On stock Raspbian /home
+# is mode 755 but some hardenings make it 700 and Meshpoint then sees
+# PermissionError. Make just the specific paths world-traversable /
+# readable -- not the whole home dir.
+info "Granting meshpoint read access to rnsd/lxmd artifacts"
+for path in \
+    "$USER_HOME" \
+    "$USER_HOME/.lxmd" \
+    "$USER_HOME/.lxmd/config" \
+    "$USER_HOME/.local" \
+    "$USER_HOME/.local/bin" \
+    "$USER_HOME/.local/bin/rnstatus"; do
+    if [ -e "$path" ]; then
+        # +rx for directories (traversal), +r for files
+        sudo chmod o+rX "$path" 2>/dev/null || true
+    fi
+done
+
 # ── 6. Enable + start the services ───────────────────────────────────
 info "Enabling and starting rnsd.service"
 sudo systemctl enable --now rnsd.service

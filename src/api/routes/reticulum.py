@@ -156,13 +156,21 @@ def _extract_lxmf_address() -> Optional[str]:
 
 
 def _extract_lxmd_display_name() -> str:
-    """Parse display_name out of the lxmd config. Falls back to 'Meshpoint'."""
-    if not _LXMD_CONFIG.exists():
-        return "Meshpoint"
+    """Parse display_name out of the lxmd config. Falls back to 'Meshpoint'.
+
+    Wrapped in a broad try/except because the meshpoint service runs
+    as a different user from the one that owns ~/.lxmd/config; any
+    OS-level access error (including PermissionError from `.exists()`
+    on a 700-mode home directory) should degrade silently to the
+    default display_name rather than 500ing the endpoint.
+    """
     try:
+        if not _LXMD_CONFIG.exists():
+            return "Meshpoint"
         text = _LXMD_CONFIG.read_text()
     except OSError:
         return "Meshpoint"
+
     # Find display_name = ... inside the [lxmf] section. Quick-and-dirty
     # because we don't want a configobj dep here just for one field.
     in_lxmf = False
@@ -181,12 +189,21 @@ def _extract_lxmd_display_name() -> str:
 def _parse_rnstatus() -> list[dict]:
     """Best-effort parse of `rnstatus` text output into interface dicts."""
     # rnstatus lives in the same bin dir as rnsd; try common locations.
+    # Each candidate check is wrapped in a try/except since `.is_file()`
+    # on a path inside another user's 700-mode home will raise.
     candidates = [
         _RNSD_HOME / ".local" / "bin" / "rnstatus",
         Path("/usr/local/bin/rnstatus"),
         Path("/usr/bin/rnstatus"),
     ]
-    binary = next((p for p in candidates if p.is_file() and os.access(p, os.X_OK)), None)
+    binary = None
+    for p in candidates:
+        try:
+            if p.is_file() and os.access(p, os.X_OK):
+                binary = p
+                break
+        except OSError:
+            continue
     if binary is None:
         return []
 

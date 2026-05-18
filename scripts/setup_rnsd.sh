@@ -58,8 +58,13 @@ fail()  { echo "[setup_rnsd] ERROR: $*" >&2; exit 1; }
 # to live on the user's PATH at ~/.local/bin and the systemd units
 # point straight at those paths.
 PIP_FLAGS="--user --upgrade --break-system-packages"
-info "Installing rns + lxmf + inotify_simple via pip ($PIP_FLAGS) for $INVOKING_USER..."
-sudo -u "$INVOKING_USER" pip install $PIP_FLAGS rns lxmf inotify_simple
+# Phase 2: `meshcore` added so scripts/identify_radios.py can do a
+# definitive (vs heuristic-by-elimination) probe of MeshCore companion
+# devices. The library wraps the binary framing protocol that current
+# MC firmware speaks -- without it the probe can still infer MC by
+# elimination, but the deterministic path needs the lib in mp's env.
+info "Installing rns + lxmf + inotify_simple + meshcore via pip ($PIP_FLAGS) for $INVOKING_USER..."
+sudo -u "$INVOKING_USER" pip install $PIP_FLAGS rns lxmf inotify_simple meshcore
 
 RNSD_BIN="$USER_HOME/.local/bin/rnsd"
 LXMD_BIN="$USER_HOME/.local/bin/lxmd"
@@ -75,6 +80,46 @@ else
     sudo usermod -a -G dialout "$INVOKING_USER"
 fi
 
+# ── 2a. Probe attached radios so we know which port goes to which ────
+# Heltec V2/V3 boards (and most CP210x-based dongles) report identical
+# USB serial numbers (default 0001), so udev can't distinguish "RNode-
+# flashed" from "MeshCore-flashed". We run scripts/identify_radios.py
+# to functionally probe each port and produce a JSON map. Results feed
+# the next steps:
+#   * RNS config gets `port = <rnode>` instead of the template default
+#   * local.yaml gets explicit serial_port pins for both rnode_usb
+#     (so meshpoint excludes it from MC auto-detect) and meshcore_usb
+#     (so meshcore source binds to the right device on the first try)
+PROBE_SCRIPT="$REPO_DIR/scripts/identify_radios.py"
+RNODE_PORT=""
+MESHCORE_PORT=""
+if [ -x "$PROBE_SCRIPT" ]; then
+    # Stop services so the probe can open the ports exclusively. They
+    # may not be running yet on a fresh install -- the `|| true` keeps
+    # set -e happy in that case.
+    sudo systemctl stop meshpoint 2>/dev/null || true
+    sudo systemctl stop rnsd       2>/dev/null || true
+    sleep 1
+
+    info "Probing attached USB-serial radios (RNode / MeshCore / Meshtastic)..."
+    PROBE_JSON="$(sudo -u "$INVOKING_USER" "$PROBE_SCRIPT" --assume-mc-leftovers 2>/dev/null || echo '{}')"
+
+    # Tiny inline parser -- avoid pulling jq as a new dep.
+    RNODE_PORT="$(echo "$PROBE_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("rnode") or "")' 2>/dev/null)"
+    MESHCORE_PORT="$(echo "$PROBE_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("meshcore") or "")' 2>/dev/null)"
+
+    if [ -n "$RNODE_PORT" ]; then
+        info "  RNode identified at: $RNODE_PORT"
+    else
+        warn "  RNode NOT detected -- rnsd config will use the template default port"
+    fi
+    if [ -n "$MESHCORE_PORT" ]; then
+        info "  MeshCore identified at: $MESHCORE_PORT"
+    else
+        info "  MeshCore NOT detected -- skipping local.yaml meshcore pin"
+    fi
+fi
+
 # ── 3. Drop config files only if missing ─────────────────────────────
 RNS_CONFIG_DIR="$USER_HOME/.reticulum"
 LXM_CONFIG_DIR="$USER_HOME/.lxmd"
@@ -86,6 +131,21 @@ if [ -f "$RNS_CONFIG_DIR/config" ]; then
 else
     info "Installing Reticulum config from template"
     sudo -u "$INVOKING_USER" cp "$TEMPLATE_DIR/reticulum-config.example" "$RNS_CONFIG_DIR/config"
+fi
+
+# 3a. If the probe found an RNode on a non-default port, rewrite the
+#     `port = ...` line in ~/.reticulum/config so rnsd opens the right
+#     device on first start. We always do this -- even if the file
+#     pre-existed -- because the probe is the source of truth.
+if [ -n "$RNODE_PORT" ] && [ -f "$RNS_CONFIG_DIR/config" ]; then
+    CURRENT_PORT="$(grep -E '^\s*port\s*=' "$RNS_CONFIG_DIR/config" | head -1 | sed 's/.*=\s*//; s/\s*$//')"
+    if [ "$CURRENT_PORT" != "$RNODE_PORT" ]; then
+        info "Updating Reticulum config: port $CURRENT_PORT -> $RNODE_PORT"
+        sudo -u "$INVOKING_USER" sed -i \
+            "s|^\(\s*port\s*=\s*\).*|\1$RNODE_PORT|" "$RNS_CONFIG_DIR/config"
+    else
+        info "Reticulum config port already matches probed RNode ($RNODE_PORT)"
+    fi
 fi
 
 if [ -f "$LXM_CONFIG_DIR/config" ]; then
@@ -184,36 +244,51 @@ sudo systemctl daemon-reload
 # auto-detect continues to work.
 MESHPOINT_LOCAL="/opt/meshpoint/config/local.yaml"
 if [ -f "$MESHPOINT_LOCAL" ]; then
-    info "Ensuring Meshpoint does NOT auto-detect the RNode USB (rnsd owns it)"
-    info "  (meshcore_usb auto-detect is intentionally left alone -- no conflict)"
-    sudo python3 - "$MESHPOINT_LOCAL" <<'PYEOF'
-import sys, yaml
+    info "Pinning USB radio ports in local.yaml using probed assignments"
+    info "  rnode_usb    serial_port=${RNODE_PORT:-<unset>}    auto_detect=false (rnsd owns)"
+    info "  meshcore_usb serial_port=${MESHCORE_PORT:-<unset>} auto_detect=true  (meshpoint owns)"
+    # Pass the probed paths into python via env vars (avoids quoting hell
+    # with the bash heredoc). Empty string means "we didn't detect it";
+    # the python block treats that as "leave whatever's there alone".
+    RNODE_PORT_FOR_PYTHON="$RNODE_PORT" \
+    MESHCORE_PORT_FOR_PYTHON="$MESHCORE_PORT" \
+    sudo -E python3 - "$MESHPOINT_LOCAL" <<'PYEOF'
+import os, sys, yaml
 from pathlib import Path
 
 p = Path(sys.argv[1])
 cfg = yaml.safe_load(p.read_text()) or {}
 cap = cfg.setdefault("capture", {})
 
+rnode_port    = os.environ.get("RNODE_PORT_FOR_PYTHON", "") or None
+meshcore_port = os.environ.get("MESHCORE_PORT_FOR_PYTHON", "") or None
+
 changed = False
-# Only disable rnode_usb. meshcore_usb stays at whatever the
-# operator already had (default True for fresh installs).
+
+# rnode_usb: never auto-detect (rnsd owns the RNode). Pin serial_port
+# to the probed value so meshpoint's existing exclusion logic adds it
+# to the meshcore auto-detect deny list. If we didn't probe it, leave
+# any existing value alone so we don't clobber an operator override.
 block = cap.setdefault("rnode_usb", {})
 if block.get("auto_detect") is not False:
     block["auto_detect"] = False
     changed = True
-if block.get("serial_port") not in (None, ""):
-    block["serial_port"] = None
+if rnode_port and block.get("serial_port") != rnode_port:
+    block["serial_port"] = rnode_port
     changed = True
 
-# If an earlier version of this script set meshcore_usb.auto_detect
-# to False, re-enable it now so operators get plug-and-play on
-# upgrade -- ONLY if it was explicitly False (don't clobber a
-# deliberate user setting to True/None).
+# meshcore_usb: keep auto_detect=True (default behaviour); pin
+# serial_port to the probed value so even auto-detect lands on the
+# right device on the first try. If we didn't probe MC, leave the
+# field alone (auto-detect will scan as before).
 mc = cap.setdefault("meshcore_usb", {})
 if mc.get("auto_detect") is False:
     mc["auto_detect"] = True
     changed = True
     print("re-enabled meshcore_usb.auto_detect (was disabled by older setup_rnsd.sh)")
+if meshcore_port and mc.get("serial_port") != meshcore_port:
+    mc["serial_port"] = meshcore_port
+    changed = True
 
 if changed:
     p.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))

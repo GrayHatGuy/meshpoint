@@ -67,17 +67,19 @@ except ImportError:
 
 
 # ── KISS / RNode probe ───────────────────────────────────────────────
-# KISS framing (RFC 1055-ish): FEND=0xC0 wraps each frame. RNode adds
-# its own command codes inside. CMD_DETECT (0x46 in the RNode firmware
-# convention) prompts the device to identify itself; reply starts with
-# FEND too. Even an UNRECOGNISED command on an RNode triggers a frame
-# response (the firmware echoes/rejects), so any FEND-bracketed reply
-# is a strong RNode signal.
+# KISS framing (RFC 1055-ish): FEND=0xC0 wraps each frame. The RNode
+# firmware extends KISS with its own command codes (matches the
+# constants in RNS source RNS/Interfaces/RNodeInterface.py KISS class).
+# CMD_DETECT = 0x08 with payload byte 0x73 ('s' = "scan") asks the
+# device to identify itself; firmware replies with a FEND-bracketed
+# frame containing CMD_DETECT and the byte 0x46 ('F' = "found").
 _KISS_FEND       = 0xC0
-_KISS_CMD_DETECT = 0x46  # RNode-specific detect; firmware replies with FEND-framed status
+_KISS_CMD_DETECT = 0x08
+_RNODE_DETECT_REQ = 0x73    # 's' -- detect request
+_RNODE_DETECT_REPLY = 0x46  # 'F' -- detect reply byte
 
-# Frame the detect command in KISS: FEND CMD_DETECT FEND
-_RNODE_PROBE = bytes([_KISS_FEND, _KISS_CMD_DETECT, _KISS_FEND])
+# Frame: FEND CMD_DETECT 0x73 FEND
+_RNODE_PROBE = bytes([_KISS_FEND, _KISS_CMD_DETECT, _RNODE_DETECT_REQ, _KISS_FEND])
 
 
 # ── Meshtastic protobuf probe ────────────────────────────────────────
@@ -90,13 +92,25 @@ _MESHTASTIC_PROBE  = bytes([0x94, 0xC3, 0x00, 0x00])
 
 
 # ── MeshCore probe ───────────────────────────────────────────────────
-# MeshCore companion firmware speaks a text-or-CBOR line protocol over
-# serial. The exact command set varies by build, but most MC firmwares
-# respond to a bare newline by emitting a prompt, version banner, or
-# JSON status blob. We send a couple of safe queries and accept any
-# printable response that mentions "mesh" / "core" / "node" / "addr"
-# / "version" (case-insensitive) as a MeshCore signal.
-_MESHCORE_PROBE = b"\n?\n"
+# MeshCore companion firmware variants speak different serial wire
+# formats: some have a text REPL (banner + prompt on a bare CR), some
+# use a binary framing with start bytes 0xC1 0xC2 or similar, some
+# emit a JSON status line on connect. Rather than guessing one, we
+# send a small bouquet of safe probes (CR, newline, '?', 'info') and
+# accept a MeshCore classification if EITHER the reply contains a
+# known MC hint string OR the reply is non-empty + non-KISS +
+# non-Meshtastic-protobuf (process of elimination after the more
+# specific probes have already failed).
+_MESHCORE_PROBES = (
+    b"\r",            # bare CR -- triggers REPL prompt on some builds
+    b"\n",            # bare LF -- alternate line ending
+    b"?\r\n",         # generic help / status query
+    b"info\r\n",      # common CLI verb on text-mode MC firmwares
+)
+_MESHCORE_HINTS = (
+    b"mesh", b"core", b"node", b"addr", b"version", b"hello",
+    b"ready", b"prefix", b"contact", b"ble", b"lora",
+)
 
 
 def _list_ports(explicit: list[str] | None) -> list[str]:
@@ -135,6 +149,23 @@ def _port_is_busy(port: str) -> bool:
         except OSError: pass
 
 
+# Module-level debug flag; set by main() from --debug. When True,
+# every probe prints what it sent and what it received to stderr so
+# operators (and future probe-protocol tuning) can see the raw bytes.
+_DEBUG = False
+
+
+def _dbg(port: str, label: str, sent: bytes, got: bytes) -> None:
+    if not _DEBUG:
+        return
+    def _trim(b: bytes, n: int = 96) -> str:
+        snip = b[:n]
+        return snip.hex() + (f" ...(+{len(b)-n}b)" if len(b) > n else "")
+    sys.stderr.write(
+        f"[debug] {port} {label}: sent={_trim(sent)}  got({len(got)}b)={_trim(got)}\n"
+    )
+
+
 def _read_for(ser: serial.Serial, duration_sec: float) -> bytes:
     """Read everything available within duration_sec. Coalesces chunks
     so we don't return prematurely after the first byte arrives."""
@@ -149,46 +180,55 @@ def _read_for(ser: serial.Serial, duration_sec: float) -> bytes:
     return b"".join(chunks)
 
 
-def _probe_rnode(ser: serial.Serial, timeout: float) -> bool:
-    """Return True if reply pattern matches RNode KISS framing."""
+def _probe_rnode(ser: serial.Serial, timeout: float, port: str = "") -> bool:
+    """Return True if reply pattern matches RNode KISS framing.
+
+    Strong match: KISS frame containing CMD_DETECT + 'F' reply byte
+    (firmware explicitly identified itself). Weaker match: at least
+    two FEND bytes (any KISS framing at all -- some firmware versions
+    don't have CMD_DETECT but still respond with KISS-framed status).
+    """
     ser.reset_input_buffer()
     ser.write(_RNODE_PROBE)
     ser.flush()
     reply = _read_for(ser, timeout)
-    # Match: starts with FEND and contains at least one valid KISS frame
-    # (two FENDs). Be lenient -- some RNode firmwares prepend an
-    # unframed boot banner before the first KISS reply.
+    _dbg(port, "rnode", _RNODE_PROBE, reply)
     if not reply:
         return False
-    return reply.count(bytes([_KISS_FEND])) >= 2 and _KISS_FEND in reply[:64]
+    detect_reply_pattern = bytes([_KISS_FEND, _KISS_CMD_DETECT, _RNODE_DETECT_REPLY])
+    if detect_reply_pattern in reply:
+        return True
+    return reply.count(bytes([_KISS_FEND])) >= 2
 
 
-def _probe_meshtastic(ser: serial.Serial, timeout: float) -> bool:
+def _probe_meshtastic(ser: serial.Serial, timeout: float, port: str = "") -> bool:
     """Return True if a Meshtastic-style protobuf header is echoed."""
     ser.reset_input_buffer()
     ser.write(_MESHTASTIC_PROBE)
     ser.flush()
     reply = _read_for(ser, timeout)
-    # Meshtastic devices respond with their own 0x94 0xC3 header on
-    # any FromRadio frame. If we see those two bytes anywhere in the
-    # reply (and we did NOT see KISS-style 0xC0 framing first), it's
-    # almost certainly Meshtastic.
+    _dbg(port, "meshtastic", _MESHTASTIC_PROBE, reply)
     return _MESHTASTIC_HEADER in reply
 
 
-_MESHCORE_HINTS = (b"mesh", b"core", b"node", b"addr", b"version", b"hello", b"ready")
-
-
-def _probe_meshcore(ser: serial.Serial, timeout: float) -> bool:
-    """Return True if reply contains printable text matching MC hints."""
-    ser.reset_input_buffer()
-    ser.write(_MESHCORE_PROBE)
-    ser.flush()
-    reply = _read_for(ser, timeout)
-    if not reply:
-        return False
-    lower = reply.lower()
-    return any(hint in lower for hint in _MESHCORE_HINTS)
+def _probe_meshcore(ser: serial.Serial, timeout: float, port: str = "") -> bool:
+    """Return True if reply contains hint strings characteristic of MeshCore."""
+    per_probe = max(0.1, timeout / max(1, len(_MESHCORE_PROBES)))
+    for probe in _MESHCORE_PROBES:
+        ser.reset_input_buffer()
+        try:
+            ser.write(probe)
+            ser.flush()
+        except serial.SerialException:
+            continue
+        reply = _read_for(ser, per_probe)
+        _dbg(port, f"meshcore({probe!r})", probe, reply)
+        if not reply:
+            continue
+        lower = reply.lower()
+        if any(hint in lower for hint in _MESHCORE_HINTS):
+            return True
+    return False
 
 
 def probe_one(port: str, baud: int, timeout: float) -> tuple[Optional[str], Optional[str]]:
@@ -207,6 +247,12 @@ def probe_one(port: str, baud: int, timeout: float) -> tuple[Optional[str], Opti
             write_timeout=1.0, exclusive=True,
         )
     except (serial.SerialException, OSError) as exc:
+        # Errno 16 == EBUSY = another process holds the port. Map to
+        # the dedicated "busy" sentinel so the caller's logic can
+        # treat it differently from a real probe failure.
+        msg = str(exc).lower()
+        if "errno 16" in msg or "resource busy" in msg or "device or resource busy" in msg:
+            return ("__busy__", None)
         return (None, f"open failed: {exc}")
 
     try:
@@ -217,11 +263,11 @@ def probe_one(port: str, baud: int, timeout: float) -> tuple[Optional[str], Opti
         # Order matters: RNode first (KISS framing is the most
         # distinctive signature), then Meshtastic (protobuf header),
         # then MeshCore (text heuristic; weakest match, last resort).
-        if _probe_rnode(ser, timeout):
+        if _probe_rnode(ser, timeout, port):
             return ("rnode", None)
-        if _probe_meshtastic(ser, timeout):
+        if _probe_meshtastic(ser, timeout, port):
             return ("meshtastic", None)
-        if _probe_meshcore(ser, timeout):
+        if _probe_meshcore(ser, timeout, port):
             return ("meshcore", None)
         return ("unknown", None)
     except Exception as exc:  # noqa: BLE001
@@ -240,7 +286,12 @@ def main() -> int:
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--timeout", type=float, default=0.6,
                     help="Per-probe reply window (default: 0.6s)")
+    ap.add_argument("--debug", action="store_true",
+                    help="Dump raw probe responses to stderr so we can see "
+                         "what each firmware actually says")
     args = ap.parse_args()
+    global _DEBUG
+    _DEBUG = args.debug
 
     ports = _list_ports(args.ports)
     result = {
@@ -254,10 +305,20 @@ def main() -> int:
     }
 
     for port in ports:
+        # Upfront busy-check is best-effort -- most USB-serial drivers
+        # allow concurrent opens until pyserial's exclusive=True actually
+        # tries to grab TIOCEXCL. We still try it because catching busy
+        # ports early skips a needless serial.Serial() instantiation.
         if _port_is_busy(port):
             result["busy"].append(port)
             continue
         kind, err = probe_one(port, args.baud, args.timeout)
+        # probe_one returns ("__busy__", None) when the exclusive open
+        # raced and lost -- bucket it correctly even though it slipped
+        # past the upfront _port_is_busy() check.
+        if kind == "__busy__":
+            result["busy"].append(port)
+            continue
         if err:
             result["errors"][port] = err
             continue

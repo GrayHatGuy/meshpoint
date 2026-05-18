@@ -68,8 +68,14 @@ if ! gzip -t "$TARBALL" 2>/dev/null; then
     fail "tarball is not a valid gzip (truncated or wrong file?)"
 fi
 
-# Confirm the meta entries exist
-if ! tar -tzf "$TARBALL" 2>/dev/null | grep -q '^/_meta/_MANIFEST.txt$'; then
+# Confirm the meta entries exist. Tar strips leading slashes when
+# writing absolute paths to the archive (see "Removing leading /
+# from member names" message), so the inside-tar path is
+# `_meta/_MANIFEST.txt` not `/_meta/_MANIFEST.txt`. Be tolerant of
+# both forms here so a backup from a tar build that DOESN'T strip
+# still validates.
+if ! tar -tzf "$TARBALL" 2>/dev/null \
+      | grep -qE '^/?_meta/_MANIFEST\.txt$'; then
     fail "tarball is missing _MANIFEST.txt -- not a meshpoint backup?"
 fi
 
@@ -77,9 +83,22 @@ fi
 info "Verifying manifest checksum..."
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
+# Extract using the relative (no leading slash) form -- that's what
+# tar actually wrote. tar will silently ignore non-matching names,
+# so if the entries are absolute we fall through to a failure below.
 tar -xzf "$TARBALL" -C "$STAGE" \
-    /_meta/_MANIFEST.txt /_meta/_SHA256SUM 2>/dev/null \
+    _meta/_MANIFEST.txt _meta/_SHA256SUM 2>/dev/null \
     || fail "could not extract metadata blobs"
+
+# If the extract above produced nothing (entries WERE absolute and
+# tar didn't match), retry with the absolute form.
+if [ ! -f "$STAGE/_meta/_MANIFEST.txt" ]; then
+    tar -xzf "$TARBALL" -C "$STAGE" \
+        /_meta/_MANIFEST.txt /_meta/_SHA256SUM 2>/dev/null \
+        || fail "could not extract metadata blobs (tried both paths)"
+fi
+[ -f "$STAGE/_meta/_MANIFEST.txt" ] || fail "_MANIFEST.txt extraction silently failed"
+
 (
     cd "$STAGE/_meta" || exit 1
     # _SHA256SUM was produced inside _meta/, so the relative path is
@@ -114,7 +133,13 @@ done
 # paths back. Using --absolute-names because the tarball was built
 # with full paths.
 info "Extracting backup payload to /..."
-tar -xzf "$TARBALL" --absolute-names --exclude='/_meta/*' -C /
+# Two excludes because tar may have stripped the leading slash when
+# writing the archive (depends on GNU tar version + the
+# --absolute-names + --transform interaction at backup time). Both
+# forms cover both shapes.
+tar -xzf "$TARBALL" --absolute-names \
+    --exclude='/_meta/*' --exclude='_meta/*' \
+    -C /
 
 # ── 5. Notify systemd if any unit files were rewritten ──────────────
 info "systemctl daemon-reload"

@@ -80,7 +80,6 @@ class RadioSettings {
                     <div id="rns-card-identity"></div>
                     <div id="rns-card-config"></div>
                     <div id="rns-card-announce"></div>
-                    <div id="rns-card-destinations"></div>
                     <div id="rns-card-status"></div>
 
                     <div class="r-console-foot">
@@ -145,10 +144,6 @@ class RadioSettings {
         rnsAnnounce.mount(document.getElementById('rns-card-announce'));
         this._cards.push(rnsAnnounce);
 
-        const rnsDest = new RnsDestinationsCard(api);
-        rnsDest.mount(document.getElementById('rns-card-destinations'));
-        this._cards.push(rnsDest);
-
         // Phase 1 #6b: live rnstatus diagnostic panel with restart
         // affordance. Lives at the bottom of the Reticulum section
         // because it's the lowest-frequency surface (only checked
@@ -157,12 +152,16 @@ class RadioSettings {
         rnsStatus.mount(document.getElementById('rns-card-status'));
         this._cards.push(rnsStatus);
 
-        // Phase 1 #4 (revised): the Reticulum Messages card has been
-        // removed from the Radio tab. LXMF messaging lives on the
-        // Messages tab alongside MT/MC chats (via the RNS protocol
-        // filter chip there). Click any peer row in the Channels
-        // card above to jump to that conversation on the Messages
-        // tab -- removes the need for a separate Messages card here.
+        // Phase 1 #4: the Reticulum Messages card was removed from the
+        // Radio tab; LXMF messaging lives on the Messages tab.
+        // Phase 4 Y: the Reticulum Channels (Destinations) card was
+        // also removed from the Radio tab -- redundant with the
+        // Dashboard Nodes panel (which shows per-peer hops, RSSI,
+        // last-heard, plus an RNS-only filter chip) and the Messages
+        // tab (which shows the same peers in conversation form).
+        // rns_destinations_card.js stays in the repo as a reference
+        // implementation for the edit-name pencil pattern that's
+        // being ported to the Messages tab in Phase 4 Y2.
     }
 
     _buildApi() {

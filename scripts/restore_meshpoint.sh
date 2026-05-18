@@ -68,21 +68,29 @@ if ! gzip -t "$TARBALL" 2>/dev/null; then
     fail "tarball is not a valid gzip (truncated or wrong file?)"
 fi
 
-# Confirm the meta entries exist. Tar strips leading slashes when
-# writing absolute paths to the archive (see "Removing leading /
-# from member names" message), so the inside-tar path is
-# `_meta/_MANIFEST.txt` not `/_meta/_MANIFEST.txt`. Be tolerant of
-# both forms here so a backup from a tar build that DOESN'T strip
-# still validates.
-if ! tar -tzf "$TARBALL" 2>/dev/null \
-      | grep -qE '^/?_meta/_MANIFEST\.txt$'; then
+# Confirm the meta entries exist. Two compatibility points:
+#
+#   1. The entry path may have a leading `/` (newer tar with
+#      --absolute-names keeps it) OR not (older tar / different
+#      flag combos strip it). Be tolerant of both with `^/?` in
+#      the regex.
+#
+#   2. `tar -tzf` fires the "Removing leading / from member names"
+#      warning to stderr on some tar versions during LISTING and
+#      exits non-zero -- which combined with `set -o pipefail`
+#      kills our pipe BEFORE grep has a chance to match, even
+#      though the matching entry was right there in stdout. Avoid
+#      the pipe entirely by capturing the listing to a temp file.
+TZF_LIST="$(mktemp)"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE" "$TZF_LIST"' EXIT
+tar -tzf "$TARBALL" >"$TZF_LIST" 2>/dev/null || true
+if ! grep -qE '^/?_meta/_MANIFEST\.txt$' "$TZF_LIST"; then
     fail "tarball is missing _MANIFEST.txt -- not a meshpoint backup?"
 fi
 
 # ── 2. Verify the in-tar manifest checksum ───────────────────────────
 info "Verifying manifest checksum..."
-STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
 # Extract using the relative (no leading slash) form -- that's what
 # tar actually wrote. tar will silently ignore non-matching names,
 # so if the entries are absolute we fall through to a failure below.

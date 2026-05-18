@@ -547,22 +547,28 @@ def _read_announce_state() -> dict:
 def _write_announce_outcome(success: bool) -> None:
     """Best-effort persist of last_announce_at + last_announce_ok.
 
-    The meshpoint user owns the file but its directory is world-r/x
-    via setup_rnsd.sh; the file itself is mode 644 after dashboard
-    creates it. If the sidecar can't write (permission, race), we
-    log and continue rather than crash the daemon.
+    Cross-user perms: this file is created by the dashboard
+    (running as `meshpoint`) on Save Announce / Send Now. As of
+    the Phase 1 #6 bug fix the dashboard chmods it 0666 so we (the
+    sidecar, running as `mp`) can rewrite it in-place. We can't
+    do the usual tmp-then-rename atomic write here because that
+    needs write access on the parent dir (/opt/meshpoint/data),
+    which is meshpoint-owned 0755 -- mp can't create new files
+    there. Direct in-place open(w) works because the file
+    already exists and is mode 0666.
+
+    The downside is a brief truncation window where a concurrent
+    reader could see an empty file. The dashboard's _read_announce_state
+    handles JSONDecodeError by returning defaults, so the worst
+    case is one stale read -- recovers on the next poll.
     """
     try:
         state = _read_announce_state()
         state["last_announce_at"] = __import__("time").time()
         state["last_announce_ok"] = bool(success)
-        ANNOUNCE_STATE_JSON.parent.mkdir(parents=True, exist_ok=True)
-        tmp = ANNOUNCE_STATE_JSON.with_suffix(".json.tmp")
-        with tmp.open("w", encoding="utf-8") as f:
+        # Direct overwrite -- see docstring re: no atomic dance.
+        with ANNOUNCE_STATE_JSON.open("w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        # chmod 644 so dashboard (different user) can keep reading
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, ANNOUNCE_STATE_JSON)
     except OSError as exc:
         logger.warning("Could not persist announce outcome: %s", exc)
 

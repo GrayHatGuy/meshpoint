@@ -852,12 +852,28 @@ def read_announce_state() -> dict:
 
 
 def _write_announce_state(state: dict) -> None:
-    """Atomic write of the announce-state JSON."""
+    """Atomic write of the announce-state JSON.
+
+    Cross-user writability detail (Phase 1 #6 bug fix): the sidecar
+    (running as mp) needs to update last_announce_at after each
+    periodic fire, but the dashboard process (running as meshpoint)
+    creates this file. Without an explicit chmod the file lands at
+    0644 default umask, and mp can read but not overwrite -- so
+    every periodic fire on the sidecar side silently failed to
+    record the timestamp, and the UI would stick at "due now"
+    forever because the sidecar's next tick re-saw the stale
+    last_announce_at and considered the announce still due.
+
+    chmod 0666 here grants mp (and the lxmf-inbox-dump service)
+    write access to the state file specifically -- no broader
+    permission relaxation on the directory.
+    """
     _ANNOUNCE_STATE_JSON.parent.mkdir(parents=True, exist_ok=True)
     tmp = _ANNOUNCE_STATE_JSON.with_suffix(".json.tmp")
     try:
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp, 0o666)
         os.replace(tmp, _ANNOUNCE_STATE_JSON)
     except Exception:
         try: tmp.unlink()
@@ -875,12 +891,20 @@ async def get_announce_state() -> dict:
 async def set_announce_period(body: AnnouncePeriodBody) -> dict:
     """Set the auto-announce period in minutes. 0 = disabled.
 
-    Does NOT fire an announce immediately -- that's POST /announce.
-    The sidecar polls this state on its 60s tick and triggers an
-    announce when (now - last_announce_at) >= period * 60.
+    Operator-facing semantics: "Save Announce" rebases the schedule
+    from NOW. The previous behavior (preserve last_announce_at)
+    meant saving a new period with an old timestamp instantly
+    elapsed the new period, leaving the UI stuck on "due now" until
+    the next fire actually landed. Now we clear last_announce_at
+    on every save -- the sidecar's next 30s tick sees None and
+    fires immediately (regardless of period_minutes value, since
+    a None last fire is unconditionally "due"), then records the
+    new last_announce_at, and the timer counts down from there.
     """
     state = read_announce_state()
-    state["period_minutes"] = body.period_minutes
+    state["period_minutes"]   = body.period_minutes
+    state["last_announce_at"] = None
+    state["last_announce_ok"] = None
     try:
         _write_announce_state(state)
     except OSError as exc:

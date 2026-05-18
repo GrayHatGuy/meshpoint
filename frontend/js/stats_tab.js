@@ -229,8 +229,8 @@ class StatsTab {
                         <canvas id="sc-roles"></canvas>
                     </div>
                     <div class="stats-card" id="ss-hw-card" style="display:none">
-                        <div class="stats-card__label">Hardware Models</div>
-                        <div class="stats-card__desc">Hardware types reported by nodes via NodeInfo</div>
+                        <div class="stats-card__label">Hardware Models (Meshtastic only)</div>
+                        <div class="stats-card__desc">Hardware types reported via Meshtastic NodeInfo. MeshCore and Reticulum announces don't carry a hardware identifier.</div>
                         <canvas id="sc-hw"></canvas>
                     </div>
                 </div>

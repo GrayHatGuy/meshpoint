@@ -72,6 +72,12 @@ class MessagingContacts {
                 unread_count:   0,
                 is_broadcast:   false,
                 peer_class:     latest.peer_class,
+                // Phase 4 Y3: pass display_name_source so the
+                // Messages-tab edit pencil can show whether the
+                // current name came from the operator override
+                // (lxmf_contacts.json) or from the classifier
+                // (announce app_data).
+                name_source:    latest.peer_display_name_source || 'none',
             });
         }
         this._sortByRecent();
@@ -208,6 +214,23 @@ class MessagingContacts {
         else if (convo.protocol === 'reticulum')  { protoBadge = 'RNS'; badgeKey = 'rns'; }
         else                                       { protoBadge = 'MT';  badgeKey = 'mt';  }
 
+        // Phase 4 Y3: edit-name pencil for RNS rows only. MT/MC
+        // names come from a different source (Meshtastic NodeInfo,
+        // MC companion contacts) so the lxmf_contacts.json override
+        // path doesn't apply. Pencil is opaque when an operator
+        // override is active, faint otherwise (hover to discover).
+        let editPencil = '';
+        if (convo.protocol === 'reticulum' && !isChannel) {
+            const opaque = (convo.name_source === 'operator');
+            const cls = opaque
+                ? 'msg-convo__edit-pencil msg-convo__edit-pencil--set'
+                : 'msg-convo__edit-pencil msg-convo__edit-pencil--hint';
+            const title = opaque
+                ? 'Operator-set nickname; click to edit'
+                : 'Click to set a nickname for this peer';
+            editPencil = `<span class="${cls}" title="${title}">✎</span>`;
+        }
+
         const timeStr = convo.last_timestamp
             ? new Date(convo.last_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             : '';
@@ -215,7 +238,7 @@ class MessagingContacts {
         el.innerHTML = `
             <div class="msg-convo__icon ${iconClass}">${iconText}</div>
             <div class="msg-convo__info">
-                <div class="msg-convo__name">${this._esc(displayName)} <span class="msg-convo__proto-badge msg-convo__proto-badge--${badgeKey}">${protoBadge}</span></div>
+                <div class="msg-convo__name">${this._esc(displayName)} <span class="msg-convo__proto-badge msg-convo__proto-badge--${badgeKey}">${protoBadge}</span>${editPencil}</div>
                 <div class="msg-convo__preview">${this._esc(convo.last_message || '')}</div>
             </div>
             <div class="msg-convo__meta">
@@ -230,11 +253,107 @@ class MessagingContacts {
             this._deleteConversation(convo);
         });
 
+        // Phase 4 Y3: pencil click → inline edit; everything else
+        // on the row → open conversation. Pencil handler stops
+        // propagation so the conversation-open doesn't also fire.
+        const pencilEl = el.querySelector('.msg-convo__edit-pencil');
+        if (pencilEl) {
+            pencilEl.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                this._openInlineEdit(el, convo);
+            });
+        }
+
         el.addEventListener('click', () => {
             this.setActive(convo.node_id);
             this._onSelect(convo);
         });
         return el;
+    }
+
+    // ── Phase 4 Y3: inline edit of operator-set RNS nicknames ──────────
+    _openInlineEdit(el, convo) {
+        // Replace the .msg-convo__info content with an input + buttons.
+        // Guard against opening twice if the operator clicks the pencil
+        // again before they finish.
+        const info = el.querySelector('.msg-convo__info');
+        if (!info || info.querySelector('.msg-convo__edit-input')) return;
+
+        const hasOverride = (convo.name_source === 'operator');
+        info.innerHTML = `
+            <div class="msg-convo__edit-form">
+                <input type="text" class="msg-convo__edit-input"
+                       value="${this._esc(convo.node_name || '')}"
+                       placeholder="Nickname"
+                       maxlength="64" />
+                <button class="msg-convo__edit-save" title="Save (Enter)">Save</button>
+                <button class="msg-convo__edit-cancel" title="Cancel (Esc)">&times;</button>
+                ${hasOverride
+                    ? '<button class="msg-convo__edit-revert" title="Revert to announce name">&#x21BA;</button>'
+                    : ''
+                }
+            </div>
+        `;
+        const input = info.querySelector('.msg-convo__edit-input');
+        input.focus();
+        input.select();
+
+        // Stop conversation-open clicks from firing while edit is open.
+        ['click', 'mousedown'].forEach(evt =>
+            info.querySelector('.msg-convo__edit-form')
+                .addEventListener(evt, (e) => e.stopPropagation())
+        );
+
+        const closeAndReload = () => this.load();
+
+        info.querySelector('.msg-convo__edit-cancel')
+            .addEventListener('click', closeAndReload);
+        info.querySelector('.msg-convo__edit-save')
+            .addEventListener('click', () =>
+                this._saveContact(convo.node_id, input.value, closeAndReload));
+        const revertBtn = info.querySelector('.msg-convo__edit-revert');
+        if (revertBtn) {
+            revertBtn.addEventListener('click', () =>
+                this._deleteContact(convo.node_id, closeAndReload));
+        }
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter')  this._saveContact(convo.node_id, input.value, closeAndReload);
+            if (ev.key === 'Escape') closeAndReload();
+        });
+    }
+
+    async _saveContact(hash, nickname, done) {
+        const nick = (nickname || '').trim();
+        if (!nick) { done(); return; }
+        try {
+            const res = await fetch(`/api/reticulum/contacts/${hash}`, {
+                method:  'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body:    JSON.stringify({nickname: nick}),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                console.error('Save nickname failed:', err.detail || res.status);
+            }
+        } catch (e) {
+            console.error('Save nickname network error:', e);
+        }
+        done();
+    }
+
+    async _deleteContact(hash, done) {
+        try {
+            const res = await fetch(`/api/reticulum/contacts/${hash}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                console.error('Revert nickname failed:', err.detail || res.status);
+            }
+        } catch (e) {
+            console.error('Revert nickname network error:', e);
+        }
+        done();
     }
 
     _showModal(contacts) {

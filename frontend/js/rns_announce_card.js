@@ -158,12 +158,16 @@ class RnsAnnounceCard {
 
         const lamp = this._root.querySelector('#rns-ann-lamp');
         const lampLabel = lamp.querySelector('.status-lamp__label');
+        // Use --ready (green) for the active lamp -- the only "lit"
+        // variants the shared status-lamp CSS defines are --ready /
+        // --warn / --off; an undefined --on class leaves the dot
+        // unstyled and indistinguishable from DISABLED.
         if (this._periodMinutes > 0) {
             lamp.classList.remove('status-lamp--off');
-            lamp.classList.add('status-lamp--on');
+            lamp.classList.add('status-lamp--ready');
             lampLabel.textContent = 'AUTO';
         } else {
-            lamp.classList.remove('status-lamp--on');
+            lamp.classList.remove('status-lamp--ready');
             lamp.classList.add('status-lamp--off');
             lampLabel.textContent = 'DISABLED';
         }

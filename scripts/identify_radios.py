@@ -212,7 +212,13 @@ def _probe_meshtastic(ser: serial.Serial, timeout: float, port: str = "") -> boo
 
 
 def _probe_meshcore(ser: serial.Serial, timeout: float, port: str = "") -> bool:
-    """Return True if reply contains hint strings characteristic of MeshCore."""
+    """Return True if reply contains hint strings characteristic of MeshCore.
+
+    Text-mode probe: tries the legacy MC REPL builds. Most current
+    MeshCore companion firmware speaks a binary framing protocol
+    instead and will silently ignore these probes -- in that case
+    we fall through to _probe_meshcore_library() below.
+    """
     per_probe = max(0.1, timeout / max(1, len(_MESHCORE_PROBES)))
     for probe in _MESHCORE_PROBES:
         ser.reset_input_buffer()
@@ -229,6 +235,60 @@ def _probe_meshcore(ser: serial.Serial, timeout: float, port: str = "") -> bool:
         if any(hint in lower for hint in _MESHCORE_HINTS):
             return True
     return False
+
+
+def _probe_meshcore_library(port: str, timeout: float) -> bool:
+    """Definitive MC probe via the meshcore Python library.
+
+    Spawns a brief asyncio loop that asks the meshcore lib (the same
+    one meshpoint's MeshcoreUsbCaptureSource uses) to connect to the
+    port. If connect succeeds within `timeout`, the device speaks the
+    MC binary protocol; we class it as MeshCore.
+
+    Requires the `meshcore` package to be importable -- only true on
+    machines where rns+lxmf+meshcore are pip-installed (i.e., the mp
+    user's environment). Returns False on import error so the probe
+    degrades gracefully when run in a stripped-down venv.
+    """
+    try:
+        import asyncio
+        from meshcore import MeshCore  # type: ignore
+    except ImportError as exc:
+        if _DEBUG:
+            sys.stderr.write(
+                f"[debug] {port} mc-lib: skipped, meshcore lib not "
+                f"available in this env ({exc})\n"
+            )
+        return False
+
+    async def _try_connect() -> bool:
+        try:
+            mc = MeshCore.create_serial(port, 115200)
+            connected = await asyncio.wait_for(mc.connect(), timeout=timeout)
+            ok = bool(connected) and getattr(mc, "is_connected", lambda: True)()
+            # Clean disconnect so we don't leave the port half-claimed
+            try:
+                await asyncio.wait_for(mc.disconnect(), timeout=2.0)
+            except Exception:
+                pass
+            return ok
+        except Exception as exc:  # noqa: BLE001
+            if _DEBUG:
+                sys.stderr.write(f"[debug] {port} mc-lib connect raised: {exc}\n")
+            return False
+
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(_try_connect())
+        finally:
+            loop.close()
+        _dbg(port, "meshcore-lib", b"<MeshCore.connect()>", b"OK" if result else b"")
+        return result
+    except Exception as exc:  # noqa: BLE001
+        if _DEBUG:
+            sys.stderr.write(f"[debug] {port} mc-lib outer raised: {exc}\n")
+        return False
 
 
 def probe_one(port: str, baud: int, timeout: float) -> tuple[Optional[str], Optional[str]]:
@@ -262,19 +322,27 @@ def probe_one(port: str, baud: int, timeout: float) -> tuple[Optional[str], Opti
 
         # Order matters: RNode first (KISS framing is the most
         # distinctive signature), then Meshtastic (protobuf header),
-        # then MeshCore (text heuristic; weakest match, last resort).
+        # then MeshCore text-mode (legacy REPL builds).
         if _probe_rnode(ser, timeout, port):
             return ("rnode", None)
         if _probe_meshtastic(ser, timeout, port):
             return ("meshtastic", None)
         if _probe_meshcore(ser, timeout, port):
             return ("meshcore", None)
+        # Text probes failed -- close serial so the meshcore library
+        # can re-open the port exclusively for its own probe.
+        try: ser.close()
+        except Exception: pass
+        ser = None  # type: ignore
+        if _probe_meshcore_library(port, timeout):
+            return ("meshcore", None)
         return ("unknown", None)
     except Exception as exc:  # noqa: BLE001
         return (None, f"probe raised: {exc}")
     finally:
-        try: ser.close()
-        except Exception: pass
+        if ser is not None:
+            try: ser.close()
+            except Exception: pass
 
 
 def main() -> int:
@@ -289,6 +357,14 @@ def main() -> int:
     ap.add_argument("--debug", action="store_true",
                     help="Dump raw probe responses to stderr so we can see "
                          "what each firmware actually says")
+    ap.add_argument("--assume-mc-leftovers", action="store_true",
+                    help="If exactly ONE port classified as 'unknown' after "
+                         "all probes AND another port classified as a known "
+                         "non-MC radio, assign the leftover to meshcore by "
+                         "process of elimination. Useful for cold-start "
+                         "setup_rnsd.sh which can rely on the 2-device "
+                         "Heltec topology even when the binary probe of "
+                         "the current MC firmware is silent.")
     args = ap.parse_args()
     global _DEBUG
     _DEBUG = args.debug
@@ -333,6 +409,21 @@ def main() -> int:
             result["unknown"].append(port)
             result["errors"][port] = (
                 f"duplicate {kind} device; first was {result[kind]}"
+            )
+
+    # Optional elimination heuristic: in the common 2-device case
+    # (one RNode, one MeshCore), if the MC binary probe was silent
+    # we can still pin it down by elimination.
+    if args.assume_mc_leftovers and result["meshcore"] is None:
+        non_mc_classified = sum(
+            1 for k in ("rnode", "meshtastic") if result.get(k)
+        )
+        if len(result["unknown"]) == 1 and non_mc_classified >= 1:
+            inferred = result["unknown"].pop(0)
+            result["meshcore"] = inferred
+            result.setdefault("inferences", []).append(
+                f"meshcore <- {inferred} (by elimination: "
+                f"{non_mc_classified} known non-MC + 1 unknown)"
             )
 
     print(json.dumps(result, indent=2))

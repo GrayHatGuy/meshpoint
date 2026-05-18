@@ -32,6 +32,13 @@ def _detect_git_branch() -> str:
     Cached for the lifetime of the process: branch changes only happen
     on `git checkout`, which requires a service restart for code changes
     to apply anyway. Cheaper than a 50ms subprocess on every stats poll.
+
+    Cross-user gotcha: the meshpoint service user usually didn't clone
+    /opt/meshpoint -- a human did (typically the mp/admin user) -- so
+    /opt/meshpoint/.git is owned by THAT user. Modern git refuses to
+    operate on a repo whose owner differs from the calling user with
+    a "detected dubious ownership" fatal. We bypass that exactly for
+    this read-only command via `-c safe.directory=<path>`.
     """
     # Try the installed location first (production path); fall back to
     # the CWD git working tree for dev / pytest scenarios.
@@ -39,17 +46,25 @@ def _detect_git_branch() -> str:
     for d in candidates:
         if not Path(d, ".git").exists():
             continue
+        # `-c safe.directory=<d>` lets the service user read this repo
+        # even when ownership differs (common: meshpoint user reading
+        # an mp-owned clone). Use `*` as a backstop for symlinked dirs.
+        git_safe = [
+            "git",
+            "-c", f"safe.directory={d}",
+            "-c", "safe.directory=*",
+            "-C", d,
+        ]
         try:
             result = subprocess.run(
-                ["git", "-C", d, "rev-parse", "--abbrev-ref", "HEAD"],
+                git_safe + ["rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True, text=True, timeout=2.0,
             )
             if result.returncode == 0:
                 branch = result.stdout.strip()
-                # Detached HEAD shows up as "HEAD"; substitute the short SHA
                 if branch == "HEAD":
                     sha = subprocess.run(
-                        ["git", "-C", d, "rev-parse", "--short", "HEAD"],
+                        git_safe + ["rev-parse", "--short", "HEAD"],
                         capture_output=True, text=True, timeout=2.0,
                     )
                     if sha.returncode == 0:

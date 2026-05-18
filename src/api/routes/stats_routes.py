@@ -126,6 +126,7 @@ async def stats_summary():
 
     roles = await _get_role_distribution()
     hw_models = await _get_hw_model_distribution()
+    protocol_stack = await _get_protocol_stack_distribution()
     active_24h = await _node_repo.get_active_count(24) if _node_repo else 0
     total_nodes = await _node_repo.get_count() if _node_repo else 0
     best_signal = await _get_best_signal()
@@ -151,7 +152,8 @@ async def stats_summary():
         "network": {
             **network,
             "roles": roles,
-            "hw_models": hw_models,
+            "hw_models": hw_models,           # kept for backwards compat
+            "protocol_stack": protocol_stack, # Phase 4 Z2 replacement
             "active_24h": active_24h,
             "total_nodes": total_nodes,
         },
@@ -221,6 +223,37 @@ async def _get_hw_model_distribution() -> dict[str, int]:
         "WHERE hardware_model IS NOT NULL GROUP BY hardware_model"
     )
     return {r["hardware_model"]: r["cnt"] for r in rows}
+
+
+async def _get_protocol_stack_distribution() -> dict[str, int]:
+    """Count nodes by protocol stack (meshtastic / meshcore / reticulum).
+
+    Replaces the Hardware Models chart for the Stats tab on this branch
+    -- hw_models is Meshtastic-only because MC and RNS announces don't
+    carry a hardware identifier, which made the chart look sparse on a
+    multi-protocol Meshpoint. Protocol-stack count is meaningful for
+    every node regardless of which stack discovered it.
+
+    Returned keys are uppercased + short ("MT", "MC", "RNS") so the
+    chart legend stays readable without further frontend processing.
+    """
+    if not _node_repo:
+        return {}
+    rows = await _node_repo._db.fetch_all(
+        "SELECT protocol, COUNT(*) as cnt FROM nodes "
+        "WHERE protocol IS NOT NULL GROUP BY protocol"
+    )
+    label_map = {
+        "meshtastic": "MT",
+        "meshcore":   "MC",
+        "reticulum":  "RNS",
+    }
+    out: dict[str, int] = {}
+    for r in rows:
+        proto = (r["protocol"] or "").lower()
+        label = label_map.get(proto, proto or "unknown")
+        out[label] = out.get(label, 0) + (r["cnt"] or 0)
+    return out
 
 
 async def _get_best_signal() -> dict:

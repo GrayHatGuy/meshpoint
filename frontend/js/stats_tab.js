@@ -229,8 +229,8 @@ class StatsTab {
                         <canvas id="sc-roles"></canvas>
                     </div>
                     <div class="stats-card" id="ss-hw-card" style="display:none">
-                        <div class="stats-card__label">Hardware Models (Meshtastic only)</div>
-                        <div class="stats-card__desc">Hardware types reported via Meshtastic NodeInfo. MeshCore and Reticulum announces don't carry a hardware identifier.</div>
+                        <div class="stats-card__label">Protocol Stack</div>
+                        <div class="stats-card__desc">Distinct nodes seen per protocol stack (MT / MC / RNS). Counts every node regardless of which stack discovered it.</div>
                         <canvas id="sc-hw"></canvas>
                     </div>
                 </div>
@@ -242,11 +242,11 @@ class StatsTab {
             </section>
 
             <section class="stats-section">
-                <h2 class="stats-section__title">Relay</h2>
+                <h2 class="stats-section__title">Relay <small class="stats-section__sub">(re-broadcasts OTHER nodes' packets -- separate from Radio tab's TX toggle)</small></h2>
                 <div class="stats-row">
                     <div class="stats-card">
                         <div class="stats-card__label">Relay Breakdown</div>
-                        <div class="stats-card__desc">Packets relayed vs rejected by the smart relay engine</div>
+                        <div class="stats-card__desc">Packets relayed vs rejected by the smart relay engine. The relay engine is OFF by default (config.relay.enabled); "relay_disabled" rejections are expected unless you've configured this Meshpoint as a community repeater.</div>
                         <canvas id="sc-relay"></canvas>
                     </div>
                     <div class="stats-card">
@@ -298,7 +298,10 @@ class StatsTab {
         this._updateDirectRelayed(directRelayed, traffic);
         this._updateActiveNodes(network);
         this._updateRoles(network.roles || {});
-        this._updateHwModels(network.hw_models || {});
+        // Phase 4 Z2: chart card replaced -- now renders protocol stack
+        // counts (MT/MC/RNS) instead of hw_model (which was Meshtastic-only
+        // because MC and RNS announces don't carry a hardware identifier).
+        this._updateProtocolStack(network.protocol_stack || {});
         this._updateProtoBars(live.protocols || traffic.protocol_distribution || {});
         this._updateTimeline(data.traffic_timeline || {});
         this._updateRelay(data.relay || {});
@@ -429,16 +432,23 @@ class StatsTab {
         this._reconcileNetworkSection();
     }
 
-    _updateHwModels(hw) {
+    _updateProtocolStack(stack) {
+        // stack is { "MT": N, "MC": N, "RNS": N } from /api/stats/summary
+        // network.protocol_stack. Backend already short-labels the keys.
         const card = document.getElementById('ss-hw-card');
-        const entries = Object.entries(hw);
+        const entries = Object.entries(stack);
         if (entries.length === 0) {
             if (card) card.style.display = 'none';
             this._reconcileNetworkSection();
             return;
         }
         if (card) card.style.display = '';
-        const labels = entries.map(([k]) => HW_NAMES[k] || k);
+        // Stable display order so MT/MC/RNS legends don't shuffle as
+        // node counts change.
+        const order = { 'MT': 0, 'MC': 1, 'RNS': 2 };
+        entries.sort(([a], [b]) =>
+            (order[a] ?? 99) - (order[b] ?? 99) || a.localeCompare(b));
+        const labels = entries.map(([k]) => k);
         const values = entries.map(([, v]) => v);
         const total = values.reduce((a, b) => a + b, 0);
         this._renderDoughnut('sc-hw', labels, values, CHART_COLORS, total);

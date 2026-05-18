@@ -288,3 +288,13 @@
     .stats-strip__value { font-size: 18px; }
     .stats-range-card__miles { font-size: 22px; }
 }
+
+/* Subtitle/clarifier under stats section headers (e.g. Relay vs TX). */
+.stats-section__sub {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.75rem;
+    font-weight: 400;
+    font-style: italic;
+    color: var(--text-muted, #8a96a3);
+}

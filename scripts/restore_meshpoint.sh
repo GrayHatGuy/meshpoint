@@ -91,21 +91,24 @@ fi
 
 # ── 2. Verify the in-tar manifest checksum ───────────────────────────
 info "Verifying manifest checksum..."
-# Extract using the relative (no leading slash) form -- that's what
-# tar actually wrote. tar will silently ignore non-matching names,
-# so if the entries are absolute we fall through to a failure below.
+# Try both path forms WITHOUT early-failing -- tar exits non-zero
+# when its spec doesn't match any archive entry, and `|| fail`
+# would short-circuit the second attempt. We check the result file
+# at the end instead.
 tar -xzf "$TARBALL" -C "$STAGE" \
-    _meta/_MANIFEST.txt _meta/_SHA256SUM 2>/dev/null \
-    || fail "could not extract metadata blobs"
-
-# If the extract above produced nothing (entries WERE absolute and
-# tar didn't match), retry with the absolute form.
+    _meta/_MANIFEST.txt _meta/_SHA256SUM 2>/dev/null || true
 if [ ! -f "$STAGE/_meta/_MANIFEST.txt" ]; then
     tar -xzf "$TARBALL" -C "$STAGE" \
-        /_meta/_MANIFEST.txt /_meta/_SHA256SUM 2>/dev/null \
-        || fail "could not extract metadata blobs (tried both paths)"
+        /_meta/_MANIFEST.txt /_meta/_SHA256SUM 2>/dev/null || true
 fi
-[ -f "$STAGE/_meta/_MANIFEST.txt" ] || fail "_MANIFEST.txt extraction silently failed"
+# Some tar builds normalize leading slash in spec but NOT in entry,
+# so both attempts may have failed. Last-resort: --wildcards match.
+if [ ! -f "$STAGE/_meta/_MANIFEST.txt" ]; then
+    tar -xzf "$TARBALL" -C "$STAGE" --wildcards \
+        '*_meta/_MANIFEST.txt' '*_meta/_SHA256SUM' 2>/dev/null || true
+fi
+[ -f "$STAGE/_meta/_MANIFEST.txt" ] || fail "could not extract metadata blobs (tried relative, absolute, wildcard)"
+[ -f "$STAGE/_meta/_SHA256SUM" ]    || fail "extracted manifest but missing checksum"
 
 (
     cd "$STAGE/_meta" || exit 1

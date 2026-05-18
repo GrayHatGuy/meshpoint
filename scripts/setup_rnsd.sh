@@ -173,10 +173,19 @@ fi
 
 sudo systemctl daemon-reload
 
-# ── 5. Disable Meshpoint's USB serial auto-detect ────────────────────
+# ── 5. Disable Meshpoint's RNODE USB auto-detect only ────────────────
+# Only the RNode conflicts with rnsd -- rnsd opens that specific USB
+# device for Reticulum and Meshpoint can't share it. meshcore_usb is
+# a DIFFERENT device (Heltec/T-Beam/T-Echo etc., typically on a
+# different ttyUSB/ttyACM node) and has no conflict. Earlier versions
+# of this script disabled BOTH, which silently prevented operators
+# from plug-and-play installing a MeshCore companion device after
+# the Reticulum setup. We now leave meshcore_usb alone so its
+# auto-detect continues to work.
 MESHPOINT_LOCAL="/opt/meshpoint/config/local.yaml"
 if [ -f "$MESHPOINT_LOCAL" ]; then
-    info "Ensuring Meshpoint does NOT auto-detect /dev/ttyUSB* (rnsd owns it)"
+    info "Ensuring Meshpoint does NOT auto-detect the RNode USB (rnsd owns it)"
+    info "  (meshcore_usb auto-detect is intentionally left alone -- no conflict)"
     sudo python3 - "$MESHPOINT_LOCAL" <<'PYEOF'
 import sys, yaml
 from pathlib import Path
@@ -186,25 +195,36 @@ cfg = yaml.safe_load(p.read_text()) or {}
 cap = cfg.setdefault("capture", {})
 
 changed = False
-for sub in ("rnode_usb", "meshcore_usb"):
-    block = cap.setdefault(sub, {})
-    if block.get("auto_detect") is not False:
-        block["auto_detect"] = False
-        changed = True
-    if block.get("serial_port") not in (None, ""):
-        block["serial_port"] = None
-        changed = True
+# Only disable rnode_usb. meshcore_usb stays at whatever the
+# operator already had (default True for fresh installs).
+block = cap.setdefault("rnode_usb", {})
+if block.get("auto_detect") is not False:
+    block["auto_detect"] = False
+    changed = True
+if block.get("serial_port") not in (None, ""):
+    block["serial_port"] = None
+    changed = True
+
+# If an earlier version of this script set meshcore_usb.auto_detect
+# to False, re-enable it now so operators get plug-and-play on
+# upgrade -- ONLY if it was explicitly False (don't clobber a
+# deliberate user setting to True/None).
+mc = cap.setdefault("meshcore_usb", {})
+if mc.get("auto_detect") is False:
+    mc["auto_detect"] = True
+    changed = True
+    print("re-enabled meshcore_usb.auto_detect (was disabled by older setup_rnsd.sh)")
 
 if changed:
     p.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False))
     print("local.yaml updated")
 else:
-    print("local.yaml already disables USB serial auto-detect")
+    print("local.yaml already configured correctly")
 PYEOF
     info "Restarting meshpoint to release any held USB ports"
     sudo systemctl restart meshpoint 2>/dev/null || warn "meshpoint not running -- skipping restart"
 else
-    warn "Meshpoint local.yaml not found at $MESHPOINT_LOCAL; skipping auto-detect disable"
+    warn "Meshpoint local.yaml not found at $MESHPOINT_LOCAL; skipping auto-detect adjust"
 fi
 
 # ── 5a. Grant meshpoint user access to systemd journals ─────────────

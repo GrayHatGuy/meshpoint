@@ -18,6 +18,7 @@
 class RnsAnnounceCard {
     static PRESETS = [
         { minutes: 0,    label: 'Off' },
+        { minutes: 1,    label: '1m' },   // testing convenience -- fast cycle
         { minutes: 30,   label: '30m' },
         { minutes: 60,   label: '1h' },
         { minutes: 180,  label: '3h' },

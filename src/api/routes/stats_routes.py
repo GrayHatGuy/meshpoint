@@ -7,7 +7,10 @@ richness of the cloud per-Meshpoint stats page.
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 
 from fastapi import APIRouter
 
@@ -20,6 +23,41 @@ from src.config import load_config
 from src.storage.node_repository import NodeRepository
 from src.storage.packet_repository import PacketRepository
 from src.version import __version__
+
+
+@lru_cache(maxsize=1)
+def _detect_git_branch() -> str:
+    """Return the current git branch of /opt/meshpoint, or "" if unknown.
+
+    Cached for the lifetime of the process: branch changes only happen
+    on `git checkout`, which requires a service restart for code changes
+    to apply anyway. Cheaper than a 50ms subprocess on every stats poll.
+    """
+    # Try the installed location first (production path); fall back to
+    # the CWD git working tree for dev / pytest scenarios.
+    candidates = ["/opt/meshpoint", "."]
+    for d in candidates:
+        if not Path(d, ".git").exists():
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", d, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if result.returncode == 0:
+                branch = result.stdout.strip()
+                # Detached HEAD shows up as "HEAD"; substitute the short SHA
+                if branch == "HEAD":
+                    sha = subprocess.run(
+                        ["git", "-C", d, "rev-parse", "--short", "HEAD"],
+                        capture_output=True, text=True, timeout=2.0,
+                    )
+                    if sha.returncode == 0:
+                        return f"detached@{sha.stdout.strip()}"
+                return branch
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            continue
+    return ""
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -122,10 +160,18 @@ def _get_device_context() -> dict:
         uptime_s = int((datetime.now(timezone.utc) - _start_time).total_seconds())
     days_online = max(1, uptime_s // 86400) if uptime_s > 0 else 0
 
+    # Phase 4 Z1: include git branch in the firmware label so the Stats
+    # tab makes it obvious WHICH build is running (vs just the upstream
+    # version which can lag the branch by many commits).
+    branch = _detect_git_branch()
+    firmware_label = f"{__version__} ({branch})" if branch else __version__
+
     return {
         "name": name,
         "region": region,
-        "firmware": __version__,
+        "firmware": firmware_label,
+        "firmware_version": __version__,
+        "firmware_branch": branch,
         "uptime_seconds": uptime_s,
         "days_online": days_online,
     }

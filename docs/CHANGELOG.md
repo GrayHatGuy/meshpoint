@@ -1,5 +1,22 @@
 # Changelog
 
+### rnsdusb branch (May 19, 2026)
+
+Fork on top of upstream v0.7.2 adding Reticulum (RNS) / LXMF and MeshCore as first-class protocols alongside Meshtastic, with a stack of UI polish and one DB concurrency fix. Three radios, three protocols, three antennas — fully separated: MT on the SX1302 concentrator (906.875 MHz), RNS/LXMF on an RNode USB stick (914.875 MHz), MeshCore on a Heltec USB companion (separate band again). The concentrator also passively captures the RNS band for analytics-only visibility on the dashboard.
+
+- **Reticulum / LXMF integration.** New `rnsd`/`lxmd` sidecar (`lxmf_inbox_dump.py` running as the `mp` login user so it has RNS library access) bridged to the main service via sudo + shared mode-0666 state files. New Radio-tab cards: Identity (display name + LXMF address with eye-toggle privacy mask), Announce Broadcast (chip presets Off / 1m / 30m / 1h / 3h / 6h / 12h / 24h, countdown, Send Now). LXMF DMs flow through the existing Messages tab with the same UI as MT/MC.
+- **MeshCore companion.** USB Heltec V3 auto-detected on boot via functional protocol probing (library probe), classified into the Sources panel, and bound to a `meshcore_tx_client` for outbound DMs and adverts. Auto-detect runs alongside the existing KISS (RNode) and protobuf (Meshtastic) probes.
+- **Messages tab unread tracking spans all three protocols.** MT/MC bump the nav badge via WebSocket `message_received`; RNS bumps via `setRnsUnread` from the poll-driven inbox merge. Per-peer watermark stored in `localStorage` as `rns_last_read:<peer>`, cleared when the conversation is opened.
+- **SQLite WAL + `synchronous=NORMAL` + `busy_timeout=5000`.** Default `journal_mode=DELETE` took an exclusive lock per write, so the Stats tab's ~15 aggregates per call (some scanning the full packets table) blocked every MT/RNS insert behind them. Under sustained traffic this produced correlated MT+LXMF stalls. WAL lets readers and writers proceed concurrently; the lower-frequency fsync recovers commit latency.
+- **Stats tab refresh.** Firmware label includes git branch with `safe.directory` bypass for cross-user `.git` ownership (`0.7.2 (rnsdusb)`). Hardware Models chart replaced with a **Protocol Stack** doughnut (MT / MC / RNS) — meaningful across all three stacks, where hw_model was Meshtastic-only because MC and RNS announces don't carry a hardware identifier. Relay-section subtitle disambiguates the relay engine from the Radio-tab TX toggle.
+- **Radio tab cleanup.** Removed redundant Reticulum Channels card. TX Enabled label hint reads "(this node's own outbound packets — not relay)" to disambiguate it from the relay engine.
+- **Messages tab edit pencil for RNS contacts.** Inline-edit nickname; opaque pencil when an operator override is active, faint hint otherwise.
+- **Fixes:** RNS auto-announce timer reset on interval change (was stuck at "due now"); announce status lamp uses defined `--ready` class so AUTO actually lights green; backup/restore tarball scripts hardened against `pipefail` interactions with tar warnings and cross-user staging paths.
+
+**Known issue — MT LongFast channel-broadcast delivery is lossy in dense RF environments.** During soak testing between two concentrator-based Meshpoints we observed ~40–50% delivery rate for MT channel broadcasts. Root cause traced to per-attempt RF loss (collisions / interference on the shared 906.875 MHz LongFast channel) — confirmed not a software pipeline failure: every packet that does arrive is correctly demoded, stored to the `packets` and `messages` tables, broadcast over WebSocket, and rendered in the UI. The Meshtastic protocol has no retry mechanism for channel broadcasts, so per-attempt loss equals user-visible loss. **MT DMs are largely unaffected** because the protocol retries DMs up to 3× with backoff, turning 40% per-attempt into ~78% effective delivery; **MeshCore appears reliable for the same reason** (built-in ACK + retry until delivered, hiding any underlying loss). Workaround: prefer MT DMs for time-sensitive traffic. Future work: opportunistic re-broadcast for outbound channel posts to match the reliability MT-DM and MC already get.
+
+---
+
 ### v0.7.2 (May 5, 2026)
 
 Two-fix bundle on top of v0.7.1. One small UX feature for hop-chain debugging, one quiet-but-important correctness fix that was inflating node counts on the cloud catalog and producing intermittent garbled-but-readable text on the local mesh. Both ride together because they touch the same RX path. Pure-Python, no recompile needed.

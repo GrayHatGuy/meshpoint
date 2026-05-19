@@ -45,13 +45,18 @@ class MessagingContacts {
         // our own LXMF address) are kept -- they're useful for testing
         // and the user explicitly chose to keep them visible earlier
         // in the Channels card design.
-        const byPeer = new Map();
+        const byPeer = new Map();          // peer -> latest msg
+        const inboundByPeer = new Map();   // peer -> all 'in' msgs
         for (const m of rnsMessages) {
             const peer = m.peer_hash || '';
             if (!peer) continue;
             const existing = byPeer.get(peer);
             if (!existing || (m.timestamp || 0) > (existing.timestamp || 0)) {
                 byPeer.set(peer, m);
+            }
+            if (m.direction === 'in') {
+                if (!inboundByPeer.has(peer)) inboundByPeer.set(peer, []);
+                inboundByPeer.get(peer).push(m);
             }
         }
         // Drop any stale RNS entries the previous load left behind,
@@ -60,7 +65,26 @@ class MessagingContacts {
         this._conversations = this._conversations.filter(
             c => c.protocol !== 'reticulum'
         );
+        // RNS unread tracking: count inbound messages newer than
+        // localStorage's `rns_last_read:<peer>` watermark. Watermark is
+        // set when the user opens that conversation (see app.js).
+        // Falls back to 0 unread if localStorage is unavailable.
+        let newRnsUnread = 0;
         for (const [peer, latest] of byPeer) {
+            let unread = 0;
+            try {
+                const watermark = parseFloat(
+                    localStorage.getItem(`rns_last_read:${peer}`) || '0',
+                );
+                const inbound = inboundByPeer.get(peer) || [];
+                unread = inbound.filter(
+                    m => (m.timestamp || 0) > watermark,
+                ).length;
+            } catch (_) { /* localStorage blocked → leave at 0 */ }
+            // Skip badging the currently-open conversation so unread
+            // doesn't appear on the row the operator is staring at.
+            if (peer === this._activeNodeId) unread = 0;
+            newRnsUnread += unread;
             this._conversations.push({
                 node_id:        peer,
                 node_name:      latest.peer_display_name
@@ -69,7 +93,7 @@ class MessagingContacts {
                 last_message:   (latest.direction === 'out' ? '↑ ' : '')
                                 + (latest.content || ''),
                 last_timestamp: latest.iso || '',
-                unread_count:   0,
+                unread_count:   unread,
                 is_broadcast:   false,
                 peer_class:     latest.peer_class,
                 // Phase 4 Y3: pass display_name_source so the
@@ -81,6 +105,14 @@ class MessagingContacts {
             });
         }
         this._sortByRecent();
+        // Lift RNS unread total up to the global Messages tab badge,
+        // mirroring how MT/MC bump it via WebSocket events. Without
+        // this, RNS new messages never lit the nav badge because the
+        // RNS path is poll-based, not event-driven.
+        if (window.messagingPanel
+            && typeof window.messagingPanel.setRnsUnread === 'function') {
+            window.messagingPanel.setRnsUnread(newRnsUnread);
+        }
     }
 
     render() {

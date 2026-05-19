@@ -21,6 +21,12 @@ class RnsIdentityCard {
         this._api = api;
         this._root = null;
         this._refreshTimer = null;
+        // Privacy default: LXMF address is hidden until the operator
+        // unhides it. The hash uniquely identifies this Meshpoint to
+        // anyone glancing at the screen / a screenshot, so we mask it
+        // by default and stash the real value in _realAddress.
+        this._addressRevealed = false;
+        this._realAddress     = '';
     }
 
     mount(rootEl) {
@@ -40,9 +46,18 @@ class RnsIdentityCard {
                 </div>
                 <div class="r-ident__row">
                     <label class="r-ident__label" for="rns-lxmf-addr">LXMF Addr</label>
-                    <input class="r-input r-input--mono" id="rns-lxmf-addr"
-                           placeholder="(rnsd/lxmd not detected)"
-                           readonly title="Click to copy" />
+                    <div class="r-ident__addr-wrap">
+                        <input class="r-input r-input--mono" id="rns-lxmf-addr"
+                               placeholder="(rnsd/lxmd not detected)"
+                               readonly title="Click to copy" />
+                        <button type="button"
+                                class="r-ident__eye"
+                                id="rns-lxmf-eye"
+                                title="Show / hide address"
+                                aria-label="Toggle address visibility">
+                            &#x1F441;
+                        </button>
+                    </div>
                 </div>
                 <div class="r-ident__hint" id="rns-ident-hint">
                     Loading...
@@ -61,13 +76,47 @@ class RnsIdentityCard {
 
     _wire() {
         const addrInput = this._root.querySelector('#rns-lxmf-addr');
+        // Click-to-copy always copies the REAL address, even while
+        // the field is showing the masked form. Operators want to
+        // paste it into MeshChat etc. without first revealing it
+        // on screen.
         addrInput.addEventListener('click', () => {
-            if (!addrInput.value) return;
-            navigator.clipboard.writeText(addrInput.value).then(
+            const real = this._realAddress;
+            if (!real) return;
+            navigator.clipboard.writeText(`<${real}>`).then(
                 () => this._api.toast('LXMF address copied'),
                 () => {},
             );
         });
+        const eye = this._root.querySelector('#rns-lxmf-eye');
+        eye.addEventListener('click', () => {
+            this._addressRevealed = !this._addressRevealed;
+            eye.classList.toggle('r-ident__eye--on', this._addressRevealed);
+            this._renderAddrField();
+        });
+    }
+
+    // Renders the LXMF address field according to the current reveal
+    // state. Single source of truth so _applyState and the eye toggle
+    // both go through the same mask logic.
+    _renderAddrField() {
+        const addrInput = this._root.querySelector('#rns-lxmf-addr');
+        if (!addrInput) return;
+        if (!this._realAddress) {
+            addrInput.value = '';
+            return;
+        }
+        addrInput.value = this._addressRevealed
+            ? `<${this._realAddress}>`
+            : this._maskAddress(this._realAddress);
+    }
+
+    // Mask shows first 4 + last 4 hex chars so two Meshpoints are
+    // distinguishable on screen without leaking the full hash. e.g.
+    // a25d4a84af70a9dd65ac7061cee24819 -> <a25d…4819>.
+    _maskAddress(addr) {
+        if (!addr || addr.length < 12) return '<••••>';
+        return `<${addr.slice(0, 4)}…${addr.slice(-4)}>`;
     }
 
     async _fetchAndRender() {
@@ -102,20 +151,21 @@ class RnsIdentityCard {
         }
 
         nameInput.value = data.display_name || '';
-        addrInput.value = data.address ? `<${data.address}>` : '';
+        this._realAddress = data.address || '';
+        this._renderAddrField();
         hint.textContent = this._statusHint(data);
     }
 
     _applyStubState(errMsg) {
         const badge = this._root.querySelector('#rns-ident-source');
         const nameInput = this._root.querySelector('#rns-display-name');
-        const addrInput = this._root.querySelector('#rns-lxmf-addr');
         const hint = this._root.querySelector('#rns-ident-hint');
 
         badge.textContent = 'STUB';
         badge.classList.add('r-badge--muted');
         nameInput.value = '';
-        addrInput.value = '';
+        this._realAddress = '';
+        this._renderAddrField();
         hint.textContent = `Reticulum stack not detected. `
             + `Install via scripts/setup_rnsd.sh and reload. (${errMsg})`;
     }

@@ -10,7 +10,8 @@ class MessagingPanel {
         this._contacts = null;
         this._chat = null;
         this._activeConvo = null;
-        this._unreadTotal = 0;
+        this._unreadTotal = 0;     // MT/MC (WS event-driven)
+        this._unreadRns   = 0;     // RNS (poll-driven via setRnsUnread)
         this._monitorMode = false;
         this._txStatus = null;
     }
@@ -95,6 +96,21 @@ class MessagingPanel {
         this._activeConvo = convo;
         this._chat.setConversation(convo);
         this._contacts.setActive(convo.node_id);
+        // Mark RNS conversation as read: the watermark is consulted in
+        // _mergeRnsConversations to decide which inbound messages still
+        // count as unread. Use the current timestamp (server messages
+        // carry a unix-seconds 'timestamp' field of the same flavor).
+        if (convo.protocol === 'reticulum' && convo.node_id) {
+            try {
+                localStorage.setItem(
+                    `rns_last_read:${convo.node_id}`,
+                    String(Date.now() / 1000),
+                );
+            } catch (_) { /* localStorage blocked → no-op */ }
+            // Refresh so the row's per-row badge clears immediately
+            // and the global nav badge recomputes.
+            this._contacts.load(this._monitorMode);
+        }
     }
 
     async _onSendMessage(text, convo) {
@@ -324,17 +340,30 @@ class MessagingPanel {
     }
 
     _updateUnreadBadge() {
+        this._unreadTotal++;
+        this._renderUnreadBadge();
+    }
+
+    // RNS is poll-based, so contacts.js calls this with the absolute
+    // count from the latest /api/reticulum/inbox snapshot rather than
+    // incrementing per-event.
+    setRnsUnread(n) {
+        this._unreadRns = Math.max(0, n | 0);
+        this._renderUnreadBadge();
+    }
+
+    _renderUnreadBadge() {
         const badge = document.getElementById('msg-unread-badge');
         if (!badge) return;
-        this._unreadTotal++;
-        badge.textContent = this._unreadTotal;
-        badge.style.display = this._unreadTotal > 0 ? 'inline-block' : 'none';
+        const total = this._unreadTotal + this._unreadRns;
+        badge.textContent = total;
+        badge.style.display = total > 0 ? 'inline-block' : 'none';
     }
 
     resetUnreadBadge() {
         this._unreadTotal = 0;
-        const badge = document.getElementById('msg-unread-badge');
-        if (badge) badge.style.display = 'none';
+        this._unreadRns   = 0;
+        this._renderUnreadBadge();
     }
 }
 

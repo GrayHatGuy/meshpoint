@@ -103,10 +103,23 @@ class DatabaseManager:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._connection = await aiosqlite.connect(self._db_path)
         self._connection.row_factory = aiosqlite.Row
+        # Concurrency PRAGMAs -- without these, default DELETE journal mode
+        # takes an exclusive lock per write so the Stats tab's full-table
+        # aggregates (e.g. SUM/MIN over packets) block every MT/RNS
+        # insert behind them, producing the correlated MT+LXMF stalls
+        # we saw under soak load.
+        #   WAL:        readers don't block writers and vice versa
+        #   NORMAL:     one fsync per checkpoint instead of per commit
+        #   busy_timeout: wait up to 5s for a lock before raising
+        await self._connection.execute("PRAGMA journal_mode=WAL")
+        await self._connection.execute("PRAGMA synchronous=NORMAL")
+        await self._connection.execute("PRAGMA busy_timeout=5000")
         await self._connection.executescript(SCHEMA_SQL)
         await self._run_migrations()
         await self._connection.commit()
-        logger.info("Database connected: %s", self._db_path)
+        logger.info(
+            "Database connected: %s (WAL, synchronous=NORMAL)", self._db_path,
+        )
 
     async def _run_migrations(self) -> None:
         cursor = await self._connection.execute("PRAGMA table_info(packets)")

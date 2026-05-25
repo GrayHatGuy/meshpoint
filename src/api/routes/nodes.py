@@ -257,12 +257,18 @@ async def _sync_lxmf_to_packets() -> None:
         except (ValueError, TypeError):
             ts = datetime.now(timezone.utc)
 
-        signal = None
-        if ann.get("rssi") is not None or ann.get("snr") is not None:
-            signal = SignalMetrics(
-                rssi=ann.get("rssi"),
-                snr=ann.get("snr"),
-            )
+        # SignalMetrics requires all five RF fields. The rnsd journal
+        # only carries rssi + snr; the rest are static for the
+        # RNode-USB interface on the rnodeusb branch (US LongFast for
+        # Reticulum: 914.875 MHz, SF8, BW 125 kHz). 0.0 for missing
+        # rssi/snr is safer than the dataclass complaining about None.
+        signal = SignalMetrics(
+            rssi=float(ann.get("rssi") or 0.0),
+            snr=float(ann.get("snr") or 0.0),
+            frequency_mhz=914.875,
+            spreading_factor=8,
+            bandwidth_khz=125.0,
+        )
 
         try:
             await _packet_repo.insert(Packet(

@@ -87,6 +87,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         _incrementPacketCount();
     });
 
+    // When the sidecar publishes a fresh lxmf_peers.json (newly-
+    // classified peer, updated display name) the server broadcasts
+    // "lxmf_inbox_changed". Trigger an immediate node refresh so the
+    // side-panel cards pick up the new display names + RNS class
+    // badges without waiting for the 15s poll.
+    window.concentratorWS.on('lxmf_inbox_changed', () => {
+        _refreshData(nodeMap, nodeCards, packetFeed);
+    });
+
     _setupTabs();
 
     window.concentratorWS.connect();

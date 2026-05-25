@@ -7,7 +7,10 @@ richness of the cloud per-Meshpoint stats page.
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 
 from fastapi import APIRouter
 
@@ -20,6 +23,56 @@ from src.config import load_config
 from src.storage.node_repository import NodeRepository
 from src.storage.packet_repository import PacketRepository
 from src.version import __version__
+
+
+@lru_cache(maxsize=1)
+def _detect_git_branch() -> str:
+    """Return the current git branch of /opt/meshpoint, or "" if unknown.
+
+    Cached for the lifetime of the process: branch changes only happen
+    on `git checkout`, which requires a service restart for code changes
+    to apply anyway. Cheaper than a 50ms subprocess on every stats poll.
+
+    Cross-user gotcha: the meshpoint service user usually didn't clone
+    /opt/meshpoint -- a human did (typically the mp/admin user) -- so
+    /opt/meshpoint/.git is owned by THAT user. Modern git refuses to
+    operate on a repo whose owner differs from the calling user with
+    a "detected dubious ownership" fatal. We bypass that exactly for
+    this read-only command via `-c safe.directory=<path>`.
+    """
+    # Try the installed location first (production path); fall back to
+    # the CWD git working tree for dev / pytest scenarios.
+    candidates = ["/opt/meshpoint", "."]
+    for d in candidates:
+        if not Path(d, ".git").exists():
+            continue
+        # `-c safe.directory=<d>` lets the service user read this repo
+        # even when ownership differs (common: meshpoint user reading
+        # an mp-owned clone). Use `*` as a backstop for symlinked dirs.
+        git_safe = [
+            "git",
+            "-c", f"safe.directory={d}",
+            "-c", "safe.directory=*",
+            "-C", d,
+        ]
+        try:
+            result = subprocess.run(
+                git_safe + ["rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if result.returncode == 0:
+                branch = result.stdout.strip()
+                if branch == "HEAD":
+                    sha = subprocess.run(
+                        git_safe + ["rev-parse", "--short", "HEAD"],
+                        capture_output=True, text=True, timeout=2.0,
+                    )
+                    if sha.returncode == 0:
+                        return f"detached@{sha.stdout.strip()}"
+                return branch
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            continue
+    return ""
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -73,6 +126,7 @@ async def stats_summary():
 
     roles = await _get_role_distribution()
     hw_models = await _get_hw_model_distribution()
+    protocol_stack = await _get_protocol_stack_distribution()
     active_24h = await _node_repo.get_active_count(24) if _node_repo else 0
     total_nodes = await _node_repo.get_count() if _node_repo else 0
     best_signal = await _get_best_signal()
@@ -98,7 +152,8 @@ async def stats_summary():
         "network": {
             **network,
             "roles": roles,
-            "hw_models": hw_models,
+            "hw_models": hw_models,           # kept for backwards compat
+            "protocol_stack": protocol_stack, # Phase 4 Z2 replacement
             "active_24h": active_24h,
             "total_nodes": total_nodes,
         },
@@ -122,10 +177,18 @@ def _get_device_context() -> dict:
         uptime_s = int((datetime.now(timezone.utc) - _start_time).total_seconds())
     days_online = max(1, uptime_s // 86400) if uptime_s > 0 else 0
 
+    # Phase 4 Z1: include git branch in the firmware label so the Stats
+    # tab makes it obvious WHICH build is running (vs just the upstream
+    # version which can lag the branch by many commits).
+    branch = _detect_git_branch()
+    firmware_label = f"{__version__} ({branch})" if branch else __version__
+
     return {
         "name": name,
         "region": region,
-        "firmware": __version__,
+        "firmware": firmware_label,
+        "firmware_version": __version__,
+        "firmware_branch": branch,
         "uptime_seconds": uptime_s,
         "days_online": days_online,
     }
@@ -160,6 +223,37 @@ async def _get_hw_model_distribution() -> dict[str, int]:
         "WHERE hardware_model IS NOT NULL GROUP BY hardware_model"
     )
     return {r["hardware_model"]: r["cnt"] for r in rows}
+
+
+async def _get_protocol_stack_distribution() -> dict[str, int]:
+    """Count nodes by protocol stack (meshtastic / meshcore / reticulum).
+
+    Replaces the Hardware Models chart for the Stats tab on this branch
+    -- hw_models is Meshtastic-only because MC and RNS announces don't
+    carry a hardware identifier, which made the chart look sparse on a
+    multi-protocol Meshpoint. Protocol-stack count is meaningful for
+    every node regardless of which stack discovered it.
+
+    Returned keys are uppercased + short ("MT", "MC", "RNS") so the
+    chart legend stays readable without further frontend processing.
+    """
+    if not _node_repo:
+        return {}
+    rows = await _node_repo._db.fetch_all(
+        "SELECT protocol, COUNT(*) as cnt FROM nodes "
+        "WHERE protocol IS NOT NULL GROUP BY protocol"
+    )
+    label_map = {
+        "meshtastic": "MT",
+        "meshcore":   "MC",
+        "reticulum":  "RNS",
+    }
+    out: dict[str, int] = {}
+    for r in rows:
+        proto = (r["protocol"] or "").lower()
+        label = label_map.get(proto, proto or "unknown")
+        out[label] = out.get(label, 0) + (r["cnt"] or 0)
+    return out
 
 
 async def _get_best_signal() -> dict:

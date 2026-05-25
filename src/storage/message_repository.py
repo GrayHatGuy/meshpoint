@@ -171,16 +171,43 @@ class MessageRepository:
 
         By default excludes overheard DMs between other nodes.
         Set include_overheard=True for monitor mode.
+
+        Implementation note: SQLite's bare-column behaviour in a
+        GROUP BY query returns text/timestamp from an arbitrary
+        row in each group, NOT the row matching MAX(timestamp) in
+        the ORDER BY. For multi-message buckets (notably
+        broadcast:meshtastic:0 which accumulates dozens of sent
+        + received rows) this picked a stale row and the
+        Conversations list showed an outdated last_message --
+        e.g. the most-recent SENT broadcast instead of a freshly
+        RECEIVED one. Fix: join against a subquery that computes
+        MAX(timestamp) per node, then pull text/name from the
+        actually-latest row.
         """
         where_clause = "" if include_overheard else "WHERE direction != 'overheard'"
         rows = await self._db.fetch_all(
-            f"""SELECT node_id, node_name, protocol, text, timestamp,
-                      SUM(CASE WHEN direction = 'received'
-                               AND status != 'read' THEN 1 ELSE 0 END) as unread
-               FROM messages
-               {where_clause}
-               GROUP BY node_id
-               ORDER BY MAX(timestamp) DESC"""
+            f"""SELECT m.node_id, m.node_name, m.protocol,
+                      m.text, m.timestamp,
+                      COALESCE(u.unread, 0) AS unread
+               FROM messages m
+               INNER JOIN (
+                   SELECT node_id, MAX(timestamp) AS max_ts
+                   FROM messages
+                   {where_clause}
+                   GROUP BY node_id
+               ) latest
+                   ON m.node_id   = latest.node_id
+                  AND m.timestamp = latest.max_ts
+               LEFT JOIN (
+                   SELECT node_id,
+                          SUM(CASE WHEN direction = 'received'
+                                    AND status != 'read'
+                                   THEN 1 ELSE 0 END) AS unread
+                   FROM messages
+                   {where_clause}
+                   GROUP BY node_id
+               ) u ON m.node_id = u.node_id
+               ORDER BY m.timestamp DESC"""
         )
         return [
             Conversation(

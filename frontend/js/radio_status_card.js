@@ -114,7 +114,9 @@ class RadioStatusCard {
                 </div>
             </div>
             <div class="r-card__row">
-                <span class="r-card__label">TX Enabled</span>
+                <span class="r-card__label">TX Enabled
+                    <small class="r-card__hint">(this node's own outbound packets -- not relay)</small>
+                </span>
                 <label class="r-switch">
                     <input type="checkbox" id="r-tx-enabled" />
                     <span class="r-switch__track"></span>

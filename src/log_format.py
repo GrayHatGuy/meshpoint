@@ -253,6 +253,7 @@ _SOURCE_DESCRIPTIONS = {
     "concentrator": "concentrator (SX1302 8-ch)",
     "serial": "serial radio",
     "meshcore_usb": "MeshCore USB node",
+    "rnode_usb": "RNode USB (Reticulum)",
     "mock": "mock source",
 }
 

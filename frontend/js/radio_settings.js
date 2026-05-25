@@ -60,6 +60,10 @@ class RadioSettings {
                         </div>
                     </div>
 
+                    <div class="r-section-header">
+                        <span class="r-section-header__tag">// MESHTASTIC</span>
+                        <span class="r-section-header__rule"></span>
+                    </div>
                     <div class="r-card-row r-card-row--hero">
                         <div id="r-card-status"></div>
                         <div id="r-card-identity"></div>
@@ -68,6 +72,15 @@ class RadioSettings {
                     <div id="r-card-nodeinfo"></div>
                     <div id="r-card-channels"></div>
                     <div id="r-card-companion"></div>
+
+                    <div class="r-section-header">
+                        <span class="r-section-header__tag">// RETICULUM</span>
+                        <span class="r-section-header__rule"></span>
+                    </div>
+                    <div id="rns-card-identity"></div>
+                    <div id="rns-card-config"></div>
+                    <div id="rns-card-announce"></div>
+                    <div id="rns-card-status"></div>
 
                     <div class="r-console-foot">
                         <span class="r-console-foot__hint">
@@ -117,6 +130,38 @@ class RadioSettings {
         const companion = new RadioCompanionCard(api);
         companion.mount(document.getElementById('r-card-companion'));
         this._cards.push(companion);
+
+        // ── Reticulum cards (Tier 1 visible, Tier 2 stubs) ──────────
+        const rnsIdentity = new RnsIdentityCard(api);
+        rnsIdentity.mount(document.getElementById('rns-card-identity'));
+        this._cards.push(rnsIdentity);
+
+        const rnsConfig = new RnsConfigCard(api);
+        rnsConfig.mount(document.getElementById('rns-card-config'));
+        this._cards.push(rnsConfig);
+
+        const rnsAnnounce = new RnsAnnounceCard(api);
+        rnsAnnounce.mount(document.getElementById('rns-card-announce'));
+        this._cards.push(rnsAnnounce);
+
+        // Phase 1 #6b: live rnstatus diagnostic panel with restart
+        // affordance. Lives at the bottom of the Reticulum section
+        // because it's the lowest-frequency surface (only checked
+        // when something looks off).
+        const rnsStatus = new RnsStatusCard(api);
+        rnsStatus.mount(document.getElementById('rns-card-status'));
+        this._cards.push(rnsStatus);
+
+        // Phase 1 #4: the Reticulum Messages card was removed from the
+        // Radio tab; LXMF messaging lives on the Messages tab.
+        // Phase 4 Y: the Reticulum Channels (Destinations) card was
+        // also removed from the Radio tab -- redundant with the
+        // Dashboard Nodes panel (which shows per-peer hops, RSSI,
+        // last-heard, plus an RNS-only filter chip) and the Messages
+        // tab (which shows the same peers in conversation form).
+        // rns_destinations_card.js stays in the repo as a reference
+        // implementation for the edit-name pencil pattern that's
+        // being ported to the Messages tab in Phase 4 Y2.
     }
 
     _buildApi() {

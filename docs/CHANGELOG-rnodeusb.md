@@ -1,4 +1,47 @@
-# Changelog
+# Changelog (rnodeusb branch)
+
+> **About this file.** This is the changelog for the `rnodeusb` branch of GrayHatGuy/meshpoint-rnode. The companion history for the earlier `rnsdusb` branch (which we forked away from to remove the multi-protocol SX1302 work) lives in `CHANGELOG-rnsdusb.md` alongside this file.
+
+### rnodeusb branch (May 21, 2026)
+
+Fresh fork from upstream KMX415/meshpoint **v0.7.3.1**, integrating the Reticulum (RNS) / LXMF and MeshCore work from the prior `rnsdusb` branch but with the SX1302 multi-protocol concentrator changes **removed**. The intent: keep the multi-protocol UX/decoding/sidecar additions while reverting the concentrator's HAL to its known-good upstream state, after we observed an MT RX regression on `rnsdusb` we traced to the multi-protocol channel-plan + per-demod-pair sync-word work. See `HISTORY-rnsdusb-mt-rx-regression.md` for the full investigation that motivated this fork.
+
+**Architecture (three radios, three antennas, fully separated):**
+
+| Stack | Radio | Frequency | TX/RX | Notes |
+|---|---|---|---|---|
+| Meshtastic | SX1302 concentrator (RAK2287) | 906.875 MHz SF11 | both | Single-protocol mode — stock upstream HAL, no multi-channel plan |
+| Reticulum / LXMF | RNode USB dongle (`/dev/ttyUSB0`) | 914.875 MHz SF8 | both | rnsd `RNodeInterface`, separate antenna, no concentrator involvement |
+| MeshCore | Heltec V3 USB companion | own band | both | meshcore library + USB serial, separate antenna |
+
+**Inherited from rnsdusb (kept):**
+
+- Reticulum / LXMF integration via `rnsd`/`lxmd` sidecar (`scripts/lxmf_inbox_dump.py`, `scripts/lxmf_announce.py`, `scripts/lxmf_send.py`, `scripts/setup_rnsd.sh`) — runs as the `mp` login user (RNS library access), bridged to the main service via shared mode-0666 state files.
+- New Radio-tab cards: Identity (display name + LXMF address with eye-toggle privacy mask), Announce Broadcast (chip presets Off / 1m / 30m / 1h / 3h / 6h / 12h / 24h, countdown, Send Now), Status, Config.
+- LXMF DMs in the Messages tab alongside MT/MC, with inline edit-pencil for operator nicknames.
+- Aggregated unread tracking across all three protocols (MT/MC via WebSocket, RNS via inbox polling with `localStorage`-watermarked per-peer reads).
+- MeshCore companion USB auto-detect, capture & TX (`src/capture/meshcore_usb_source.py`, `src/transmit/meshcore_tx_client.py`).
+- RNode USB capture source (`src/capture/rnode_source.py`, `src/hal/rnode_driver.py`) with `exclude_ports` coordination so RNode and MC never contend for the same `/dev/ttyUSB*`.
+- Stats tab: firmware label with git branch (via `safe.directory` bypass for cross-user `.git` ownership), Protocol Stack doughnut (MT / MC / RNS) replacing the Meshtastic-only hardware-model chart, Relay-vs-TX disambiguation.
+- Backup/restore scripts (`scripts/backup_meshpoint.sh`, `scripts/restore_meshpoint.sh`).
+- Reticulum decoder (`src/decode/rnode_decoder.py`) — present but not wired into the live packet path (the SX1302 doesn't capture RNS in this branch); reserved for future RNode-USB packet sniffing if that's ever added.
+
+**Explicitly removed from rnsdusb (the regression cluster):**
+
+- Multi-protocol SX1302 channel plan (`multiprotocol_us915()` factory, tagged IF chains, per-`if_chain` protocol routing).
+- Per-demod-pair sync-word HAL wiring (`sx1302_lora_syncword_pair`), TX sync-word override.
+- CMD_PROMISC rewrites (`0x11` revert, RNS sync_word config plumbing).
+- `concentrator_multi_protocol` config flag.
+- `scripts/patch_hal.sh` HAL patch (kept at upstream baseline).
+- WAL fix on the SQLite connection (added defensively on `rnsdusb` while chasing the regression; not needed at upstream-baseline DB load).
+
+**Upstream improvements preserved from v0.7.3.1:**
+
+- v0.7.3 dashboard auth backend (bcrypt + JWT sessions, lockout tracker, WS handshake guard, `/api/auth/{setup,login,logout}`, all `/api/*` and `/ws` routes protected).
+- v0.7.3 dashboard auth frontend (login form, sign-out button, session-aware WS reconnect).
+- v0.7.3.1 hotfixes (WS auth close-code, dashboard root redirect).
+- Meshtastic decoder's `hop_limit > hop_start` defensive drop (phantom-leak fix).
+- Topbar logo, favicon, sign-out UI affordance.
 
 ### Unreleased
 

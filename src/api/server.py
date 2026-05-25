@@ -17,7 +17,7 @@ from src.api.auth.auth_bootstrap import AuthSubsystem, build_auth_subsystem
 from src.api.auth.dependencies import SESSION_COOKIE_NAME, require_auth
 from src.api.auth.jwt_session import JwtSessionService
 from src.api.auth.ws_guard import WS_AUTH_CLOSE_CODE, authenticate_websocket
-from src.api.routes import analytics, auth_routes, config_routes, device, identity_routes, messages, nodeinfo_routes, nodes, packets, stats_routes, system_metrics, telemetry, update_check
+from src.api.routes import analytics, auth_routes, config_routes, device, identity_routes, messages, nodeinfo_routes, nodes, packets, reticulum, stats_routes, system_metrics, telemetry, update_check
 from src.api.upstream_client import UpstreamClient
 from src.api.websocket_manager import WebSocketManager
 from src.config import AppConfig, load_config, validate_activation
@@ -132,6 +132,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(nodeinfo_routes.router, dependencies=protected)
     app.include_router(config_routes.router, dependencies=protected)
     app.include_router(stats_routes.router, dependencies=protected)
+    app.include_router(reticulum.router, dependencies=protected)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -180,19 +181,34 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 def _build_pipeline(config: AppConfig) -> PipelineCoordinator:
     coordinator = PipelineCoordinator(config)
 
+    # Build exclusion sets so RNode and MeshCore never contend for the
+    # same /dev/ttyUSB* port when both are auto-detecting.
+    rnode_port    = config.capture.rnode_usb.serial_port
+    meshcore_port = config.capture.meshcore_usb.serial_port
+    rnode_excludes    = frozenset({meshcore_port} if meshcore_port else set())
+    meshcore_excludes = frozenset({rnode_port}    if rnode_port    else set())
+
     for source_name in config.capture.sources:
         if source_name == "serial":
             _add_serial_source(coordinator, config)
         elif source_name == "concentrator":
             _add_concentrator_source(coordinator, config)
         elif source_name == "meshcore_usb":
-            _add_meshcore_usb_source(coordinator, config)
+            _add_meshcore_usb_source(coordinator, config, meshcore_excludes)
+        elif source_name == "rnode_usb":
+            _add_rnode_usb_source(coordinator, config, rnode_excludes)
 
     if (
         "meshcore_usb" not in config.capture.sources
         and config.capture.meshcore_usb.auto_detect
     ):
-        _add_meshcore_usb_source(coordinator, config)
+        _add_meshcore_usb_source(coordinator, config, meshcore_excludes)
+
+    if (
+        "rnode_usb" not in config.capture.sources
+        and config.capture.rnode_usb.auto_detect
+    ):
+        _add_rnode_usb_source(coordinator, config, rnode_excludes)
 
     return coordinator
 
@@ -227,21 +243,68 @@ def _add_concentrator_source(
 
 
 def _add_meshcore_usb_source(
-    coordinator: PipelineCoordinator, config: AppConfig
+    coordinator: PipelineCoordinator,
+    config: AppConfig,
+    exclude_ports: frozenset[str] = frozenset(),
 ):
     try:
         from src.capture.meshcore_usb_source import MeshcoreUsbCaptureSource
         usb_cfg = config.capture.meshcore_usb
+        serial_port = usb_cfg.serial_port
+        if serial_port and serial_port in exclude_ports:
+            logger.warning(
+                "MeshCore USB port %s is already claimed by another source "
+                "-- skipping MeshCore USB",
+                serial_port,
+            )
+            return
         coordinator.capture_coordinator.add_source(
             MeshcoreUsbCaptureSource(
-                serial_port=usb_cfg.serial_port,
+                serial_port=serial_port,
                 baud_rate=usb_cfg.baud_rate,
                 auto_detect=usb_cfg.auto_detect,
+                exclude_ports=exclude_ports,
             )
         )
     except ImportError:
         logger.warning(
             "MeshCore USB unavailable -- meshcore package not installed"
+        )
+
+
+def _add_rnode_usb_source(
+    coordinator: PipelineCoordinator,
+    config: AppConfig,
+    exclude_ports: frozenset[str] = frozenset(),
+):
+    try:
+        from src.capture.rnode_source import RnodeCaptureSource
+        rnode_cfg = config.capture.rnode_usb
+        serial_port = rnode_cfg.serial_port
+        if serial_port and serial_port in exclude_ports:
+            logger.warning(
+                "RNode USB port %s is already claimed by another source "
+                "-- skipping RNode USB",
+                serial_port,
+            )
+            return
+        coordinator.capture_coordinator.add_source(
+            RnodeCaptureSource(
+                serial_port=serial_port,
+                baud_rate=rnode_cfg.baud_rate,
+                frequency_hz=rnode_cfg.frequency_hz,
+                bandwidth_hz=rnode_cfg.bandwidth_hz,
+                spreading_factor=rnode_cfg.spreading_factor,
+                coding_rate=rnode_cfg.coding_rate,
+                tx_power=rnode_cfg.tx_power,
+                sync_word=rnode_cfg.sync_word,
+                auto_detect=rnode_cfg.auto_detect,
+                exclude_ports=exclude_ports,
+            )
+        )
+    except ImportError:
+        logger.warning(
+            "RNode USB unavailable -- KISS support not installed"
         )
 
 

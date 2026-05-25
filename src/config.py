@@ -72,12 +72,39 @@ class MeshcoreUsbConfig:
 
 
 @dataclass
+class RnodeUsbConfig:
+    """RNode USB dongle capture -- Reticulum/LXMF over LoRa via USB UART.
+
+    Radio parameters must match the target Reticulum network.  Defaults
+    are for the US 915 MHz ISM band with conservative LoRa settings.
+
+    ``sync_word`` records the network's expected sync word (Reticulum
+    default 0x42). On the USB RNode path it is informational only --
+    the dongle's onboard radio does the sync filtering before bytes
+    reach the host. The standard RNode firmware does not expose a
+    KISS command to change it; use ``rnodeconf`` to flash a matching
+    value if your network differs.
+    """
+
+    serial_port: Optional[str] = None
+    baud_rate: int = 115200
+    frequency_hz: int = 914_875_000
+    bandwidth_hz: int = 125_000
+    spreading_factor: int = 8
+    coding_rate: int = 5
+    tx_power: int = 22          # required by RNode init; TX is never invoked
+    sync_word: int = 0x42       # Reticulum network sync word; see docstring
+    auto_detect: bool = True
+
+
+@dataclass
 class CaptureConfig:
     sources: list[str] = field(default_factory=lambda: ["mock"])
     serial_port: Optional[str] = None
     serial_baud: int = 115200
     concentrator_spi_device: str = "/dev/spidev0.0"
     meshcore_usb: MeshcoreUsbConfig = field(default_factory=MeshcoreUsbConfig)
+    rnode_usb: RnodeUsbConfig = field(default_factory=RnodeUsbConfig)
 
 
 @dataclass

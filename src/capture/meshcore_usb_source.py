@@ -48,10 +48,12 @@ class MeshcoreUsbCaptureSource(CaptureSource):
         serial_port: Optional[str] = None,
         baud_rate: int = 115200,
         auto_detect: bool = True,
+        exclude_ports: frozenset[str] = frozenset(),
     ):
         self._configured_port = serial_port
         self._baud_rate = baud_rate
         self._auto_detect = auto_detect
+        self._exclude_ports = exclude_ports
         self._meshcore = None
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=500)
         self._running = False
@@ -420,7 +422,9 @@ class MeshcoreUsbCaptureSource(CaptureSource):
         if not self._auto_detect:
             return None
         from src.capture.meshcore_usb_detect import detect_meshcore_port
-        return await detect_meshcore_port(baud=self._baud_rate)
+        return await detect_meshcore_port(
+            exclude_ports=self._exclude_ports, baud=self._baud_rate
+        )
 
 
 def _extract_signal(payload: dict) -> SignalMetrics:

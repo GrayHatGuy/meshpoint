@@ -11,6 +11,7 @@ from src.models.signal import SignalMetrics
 class Protocol(str, Enum):
     MESHTASTIC = "meshtastic"
     MESHCORE = "meshcore"
+    RETICULUM = "reticulum"
     UNKNOWN = "unknown"
 
 

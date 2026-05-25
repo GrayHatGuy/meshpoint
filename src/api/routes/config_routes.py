@@ -98,6 +98,23 @@ async def get_config():
 
     node_id_hex = f"!{resolved_node_id:08x}" if resolved_node_id else ""
 
+    cap = _config.capture
+    rnode = cap.rnode_usb
+    capture_view = {
+        "sources": list(cap.sources),
+        "rnode_usb": {
+            "serial_port": rnode.serial_port,
+            "baud_rate": rnode.baud_rate,
+            "frequency_hz": rnode.frequency_hz,
+            "bandwidth_hz": rnode.bandwidth_hz,
+            "spreading_factor": rnode.spreading_factor,
+            "coding_rate": rnode.coding_rate,
+            "tx_power": rnode.tx_power,
+            "sync_word": rnode.sync_word,
+            "auto_detect": rnode.auto_detect,
+        },
+    }
+
     return {
         "radio": {
             "region": radio.region,
@@ -109,6 +126,7 @@ async def get_config():
             "preamble_length": radio.preamble_length,
             "current_preset": current_preset,
         },
+        "capture": capture_view,
         "transmit": {
             "enabled": tx.enabled,
             "node_id": resolved_node_id,

@@ -64,11 +64,18 @@ def maybe_add_meshcore_usb(
     report: HardwareReport,
     confirm_fn,
     choose_fn,
+    already_claimed: set[str] | None = None,
 ) -> None:
-    """Offer to enable MeshCore USB monitoring if USB serial ports exist."""
+    """Offer to enable MeshCore USB monitoring if unclaimed USB serial ports exist.
+
+    ``already_claimed`` contains ports already assigned to RNode or another
+    source so they are not offered as MeshCore candidates.
+    """
+    claimed = already_claimed or set()
     capture_port = config.get("capture", {}).get("serial_port")
     candidates = [
-        p for p in report.meshcore_usb_candidates if p != capture_port
+        p for p in report.meshcore_usb_candidates
+        if p != capture_port and p not in claimed
     ]
 
     if not candidates:

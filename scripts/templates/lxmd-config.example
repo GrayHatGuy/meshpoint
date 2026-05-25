@@ -1,0 +1,45 @@
+# Minimal LXMF Daemon (lxmd) config for a Meshpoint Pi that wants
+# to send and receive LXMF messages over the LoRa RNode.
+#
+# This file gets copied to ~/.lxmd/config on first install.
+# After install you can hand-edit it; the setup script will not
+# overwrite an existing config.
+#
+# Key choices made here:
+#   - [propagation] enable_node = no
+#         The local node only receives messages for its own address.
+#         Flip to yes if you want this Pi to act as a propagation node
+#         (store-and-forward for offline peers in the LXMF network).
+#   - [lxmf] announce_at_start = yes
+#         lxmd broadcasts its LXMF delivery destination at startup so
+#         peers (MeshChat, Sideband, Nomadnet) discover the address
+#         within seconds of service start instead of waiting up to
+#         announce_interval. WITHOUT THIS, the announce we manually
+#         trigger from rnsd does NOT match the address lxmd listens
+#         on, and inbound messages will fail with no path response.
+#
+# IMPORTANT: the LXMF address you give to other people is NOT the RNS
+# transport identity. It is the address lxmd prints on startup:
+#     "LXMF Router ready to receive on <YOUR_LXMF_ADDR>"
+# This is the value to put in MeshChat / Sideband / etc.
+
+[propagation]
+  enable_node = no
+  announce_interval = 360
+  announce_at_start = yes
+  autopeer = yes
+  autopeer_maxdepth = 6
+  auth_required = no
+
+[lxmf]
+  # Shown to peers when they see your announce. Change to something
+  # identifiable for your deployment.
+  display_name = Meshpoint
+  announce_at_start = yes
+  # 1 MB cap on a single incoming peer-to-peer message; raise if you
+  # plan to ship large attachments over LoRa (slow but possible).
+  delivery_transfer_max_accepted_size = 1000
+
+[logging]
+  # 0=critical .. 4=info .. 7=extreme. 4 is the sane default.
+  loglevel = 4

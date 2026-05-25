@@ -15,17 +15,103 @@ class MessagingContacts {
 
     async load(includeOverheard = false) {
         try {
-            const [convosRes, channelsRes] = await Promise.all([
+            const [convosRes, channelsRes, rnsRes] = await Promise.all([
                 fetch(includeOverheard
                     ? '/api/messages/conversations?include_overheard=true'
                     : '/api/messages/conversations'),
                 fetch('/api/messages/channels'),
+                // Phase 1 #5: pull RNS messages in the same pass.
+                // .catch returns null so a missing rnsd doesn't break
+                // the MT/MC conversation list.
+                fetch('/api/reticulum/inbox?limit=500').catch(() => null),
             ]);
             this._conversations = await convosRes.json();
             this._channels = await channelsRes.json();
+
+            if (rnsRes && rnsRes.ok) {
+                const rnsData = await rnsRes.json();
+                this._mergeRnsConversations(rnsData.messages || []);
+            }
             this.render();
         } catch (e) {
             console.error('Failed to load conversations:', e);
+        }
+    }
+
+    _mergeRnsConversations(rnsMessages) {
+        // RNS inbox is a flat list of messages with direction/peer_hash;
+        // collapse into one conversation per peer (latest message wins
+        // for preview + timestamp). Self-conversations (peer_hash ==
+        // our own LXMF address) are kept -- they're useful for testing
+        // and the user explicitly chose to keep them visible earlier
+        // in the Channels card design.
+        const byPeer = new Map();          // peer -> latest msg
+        const inboundByPeer = new Map();   // peer -> all 'in' msgs
+        for (const m of rnsMessages) {
+            const peer = m.peer_hash || '';
+            if (!peer) continue;
+            const existing = byPeer.get(peer);
+            if (!existing || (m.timestamp || 0) > (existing.timestamp || 0)) {
+                byPeer.set(peer, m);
+            }
+            if (m.direction === 'in') {
+                if (!inboundByPeer.has(peer)) inboundByPeer.set(peer, []);
+                inboundByPeer.get(peer).push(m);
+            }
+        }
+        // Drop any stale RNS entries the previous load left behind,
+        // then re-append from the fresh snapshot. Non-RNS conversations
+        // are untouched.
+        this._conversations = this._conversations.filter(
+            c => c.protocol !== 'reticulum'
+        );
+        // RNS unread tracking: count inbound messages newer than
+        // localStorage's `rns_last_read:<peer>` watermark. Watermark is
+        // set when the user opens that conversation (see app.js).
+        // Falls back to 0 unread if localStorage is unavailable.
+        let newRnsUnread = 0;
+        for (const [peer, latest] of byPeer) {
+            let unread = 0;
+            try {
+                const watermark = parseFloat(
+                    localStorage.getItem(`rns_last_read:${peer}`) || '0',
+                );
+                const inbound = inboundByPeer.get(peer) || [];
+                unread = inbound.filter(
+                    m => (m.timestamp || 0) > watermark,
+                ).length;
+            } catch (_) { /* localStorage blocked → leave at 0 */ }
+            // Skip badging the currently-open conversation so unread
+            // doesn't appear on the row the operator is staring at.
+            if (peer === this._activeNodeId) unread = 0;
+            newRnsUnread += unread;
+            this._conversations.push({
+                node_id:        peer,
+                node_name:      latest.peer_display_name
+                                  || (peer.slice(0, 12) + '…'),
+                protocol:       'reticulum',
+                last_message:   (latest.direction === 'out' ? '↑ ' : '')
+                                + (latest.content || ''),
+                last_timestamp: latest.iso || '',
+                unread_count:   unread,
+                is_broadcast:   false,
+                peer_class:     latest.peer_class,
+                // Phase 4 Y3: pass display_name_source so the
+                // Messages-tab edit pencil can show whether the
+                // current name came from the operator override
+                // (lxmf_contacts.json) or from the classifier
+                // (announce app_data).
+                name_source:    latest.peer_display_name_source || 'none',
+            });
+        }
+        this._sortByRecent();
+        // Lift RNS unread total up to the global Messages tab badge,
+        // mirroring how MT/MC bump it via WebSocket events. Without
+        // this, RNS new messages never lit the nav badge because the
+        // RNS path is poll-based, not event-driven.
+        if (window.messagingPanel
+            && typeof window.messagingPanel.setRnsUnread === 'function') {
+            window.messagingPanel.setRnsUnread(newRnsUnread);
         }
     }
 
@@ -139,11 +225,13 @@ class MessagingContacts {
         el.dataset.nodeId = convo.node_id;
 
         const isChannel = !!convo.is_broadcast;
-        const iconClass = isChannel
-            ? 'msg-convo__icon--channel'
-            : convo.protocol === 'meshcore'
-                ? 'msg-convo__icon--mc'
-                : 'msg-convo__icon--mt';
+        // Phase 1 #5: third icon variant for Reticulum. Cyan to match
+        // the RNS palette used elsewhere (Channels card, Nodes panel).
+        let iconClass;
+        if (isChannel) iconClass = 'msg-convo__icon--channel';
+        else if (convo.protocol === 'meshcore')  iconClass = 'msg-convo__icon--mc';
+        else if (convo.protocol === 'reticulum') iconClass = 'msg-convo__icon--rns';
+        else iconClass = 'msg-convo__icon--mt';
 
         const iconText = isChannel
             ? '#'
@@ -153,7 +241,27 @@ class MessagingContacts {
             ? convo.node_name || `Ch ${convo.channel || 0}`
             : convo.node_name || convo.node_id;
 
-        const protoBadge = convo.protocol === 'meshcore' ? 'MC' : 'MT';
+        let protoBadge, badgeKey;
+        if (convo.protocol === 'meshcore')        { protoBadge = 'MC';  badgeKey = 'mc';  }
+        else if (convo.protocol === 'reticulum')  { protoBadge = 'RNS'; badgeKey = 'rns'; }
+        else                                       { protoBadge = 'MT';  badgeKey = 'mt';  }
+
+        // Phase 4 Y3: edit-name pencil for RNS rows only. MT/MC
+        // names come from a different source (Meshtastic NodeInfo,
+        // MC companion contacts) so the lxmf_contacts.json override
+        // path doesn't apply. Pencil is opaque when an operator
+        // override is active, faint otherwise (hover to discover).
+        let editPencil = '';
+        if (convo.protocol === 'reticulum' && !isChannel) {
+            const opaque = (convo.name_source === 'operator');
+            const cls = opaque
+                ? 'msg-convo__edit-pencil msg-convo__edit-pencil--set'
+                : 'msg-convo__edit-pencil msg-convo__edit-pencil--hint';
+            const title = opaque
+                ? 'Operator-set nickname; click to edit'
+                : 'Click to set a nickname for this peer';
+            editPencil = `<span class="${cls}" title="${title}">✎</span>`;
+        }
 
         const timeStr = convo.last_timestamp
             ? new Date(convo.last_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -162,7 +270,7 @@ class MessagingContacts {
         el.innerHTML = `
             <div class="msg-convo__icon ${iconClass}">${iconText}</div>
             <div class="msg-convo__info">
-                <div class="msg-convo__name">${this._esc(displayName)} <span class="msg-convo__proto-badge msg-convo__proto-badge--${convo.protocol === 'meshcore' ? 'mc' : 'mt'}">${protoBadge}</span></div>
+                <div class="msg-convo__name">${this._esc(displayName)} <span class="msg-convo__proto-badge msg-convo__proto-badge--${badgeKey}">${protoBadge}</span>${editPencil}</div>
                 <div class="msg-convo__preview">${this._esc(convo.last_message || '')}</div>
             </div>
             <div class="msg-convo__meta">
@@ -177,11 +285,107 @@ class MessagingContacts {
             this._deleteConversation(convo);
         });
 
+        // Phase 4 Y3: pencil click → inline edit; everything else
+        // on the row → open conversation. Pencil handler stops
+        // propagation so the conversation-open doesn't also fire.
+        const pencilEl = el.querySelector('.msg-convo__edit-pencil');
+        if (pencilEl) {
+            pencilEl.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                this._openInlineEdit(el, convo);
+            });
+        }
+
         el.addEventListener('click', () => {
             this.setActive(convo.node_id);
             this._onSelect(convo);
         });
         return el;
+    }
+
+    // ── Phase 4 Y3: inline edit of operator-set RNS nicknames ──────────
+    _openInlineEdit(el, convo) {
+        // Replace the .msg-convo__info content with an input + buttons.
+        // Guard against opening twice if the operator clicks the pencil
+        // again before they finish.
+        const info = el.querySelector('.msg-convo__info');
+        if (!info || info.querySelector('.msg-convo__edit-input')) return;
+
+        const hasOverride = (convo.name_source === 'operator');
+        info.innerHTML = `
+            <div class="msg-convo__edit-form">
+                <input type="text" class="msg-convo__edit-input"
+                       value="${this._esc(convo.node_name || '')}"
+                       placeholder="Nickname"
+                       maxlength="64" />
+                <button class="msg-convo__edit-save" title="Save (Enter)">Save</button>
+                <button class="msg-convo__edit-cancel" title="Cancel (Esc)">&times;</button>
+                ${hasOverride
+                    ? '<button class="msg-convo__edit-revert" title="Revert to announce name">&#x21BA;</button>'
+                    : ''
+                }
+            </div>
+        `;
+        const input = info.querySelector('.msg-convo__edit-input');
+        input.focus();
+        input.select();
+
+        // Stop conversation-open clicks from firing while edit is open.
+        ['click', 'mousedown'].forEach(evt =>
+            info.querySelector('.msg-convo__edit-form')
+                .addEventListener(evt, (e) => e.stopPropagation())
+        );
+
+        const closeAndReload = () => this.load();
+
+        info.querySelector('.msg-convo__edit-cancel')
+            .addEventListener('click', closeAndReload);
+        info.querySelector('.msg-convo__edit-save')
+            .addEventListener('click', () =>
+                this._saveContact(convo.node_id, input.value, closeAndReload));
+        const revertBtn = info.querySelector('.msg-convo__edit-revert');
+        if (revertBtn) {
+            revertBtn.addEventListener('click', () =>
+                this._deleteContact(convo.node_id, closeAndReload));
+        }
+        input.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter')  this._saveContact(convo.node_id, input.value, closeAndReload);
+            if (ev.key === 'Escape') closeAndReload();
+        });
+    }
+
+    async _saveContact(hash, nickname, done) {
+        const nick = (nickname || '').trim();
+        if (!nick) { done(); return; }
+        try {
+            const res = await fetch(`/api/reticulum/contacts/${hash}`, {
+                method:  'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body:    JSON.stringify({nickname: nick}),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                console.error('Save nickname failed:', err.detail || res.status);
+            }
+        } catch (e) {
+            console.error('Save nickname network error:', e);
+        }
+        done();
+    }
+
+    async _deleteContact(hash, done) {
+        try {
+            const res = await fetch(`/api/reticulum/contacts/${hash}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                console.error('Revert nickname failed:', err.detail || res.status);
+            }
+        } catch (e) {
+            console.error('Revert nickname network error:', e);
+        }
+        done();
     }
 
     _showModal(contacts) {

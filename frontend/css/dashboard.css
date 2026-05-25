@@ -511,3 +511,22 @@ html, body {
 .packet-row--new { animation: packetFlash 1s ease-out; }
 
 /* Responsive overrides for this file live in css/responsive.css. */
+
+/* ── Reticulum packet row enrichment ──────────────────────────── */
+/* Renders the "unknown · <hash>" placeholder for Reticulum
+   packets whose peer isn't in the auto-discovered address book
+   yet. The class badges (.rns-class--lxmf, etc.) are defined in
+   radio_cards.css and reused here verbatim. */
+.rns-unknown {
+    color: rgba(255,255,255,0.55);
+    font-style: italic;
+}
+.rns-class__short {
+    color: rgba(255,255,255,0.30);
+    margin: 0 0.15rem;
+}
+.rns-class__hash {
+    font-family: var(--font-mono);
+    color: rgba(255,255,255,0.55);
+    font-size: 0.78em;
+}

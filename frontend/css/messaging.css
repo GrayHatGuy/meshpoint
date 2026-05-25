@@ -79,6 +79,10 @@
 
 .msg-convo__icon--mt { background: #3498db; }
 .msg-convo__icon--mc { background: #27ae60; }
+/* Phase 1 #5: Reticulum/LXMF icon. Cyan keeps the cross-tab
+   colour story consistent with the Channels card LXMF pill and
+   the Nodes-panel RNS badge. */
+.msg-convo__icon--rns { background: #06b6d4; }
 .msg-convo__icon--bcast { background: #e67e22; }
 .msg-convo__icon--channel {
     background: var(--surface-2, #22223a);
@@ -114,6 +118,7 @@
 
 .msg-convo__proto-badge--mt { background: #3498db; }
 .msg-convo__proto-badge--mc { background: #27ae60; }
+.msg-convo__proto-badge--rns { background: #06b6d4; }
 
 .msg-convo__info { flex: 1; min-width: 0; }
 
@@ -169,6 +174,72 @@
 .msg-convo__delete:hover { color: #e74c3c; }
 .msg-convo:hover .msg-convo__delete { display: inline-block; }
 
+/* ── Edit-nickname pencil (Phase 4 Y3, RNS conversations only) ──── */
+.msg-convo__edit-pencil {
+    margin-left: 0.3rem;
+    cursor: pointer;
+    font-size: 0.78em;
+    user-select: none;
+    vertical-align: middle;
+}
+/* Operator-set name: pencil is fully opaque cyan so you can see
+   at a glance which rows have manual overrides. */
+.msg-convo__edit-pencil--set {
+    color: rgba(80, 180, 255, 0.85);
+}
+/* No override: pencil is nearly invisible until the row is hovered
+   -- discoverable without shouting "edit me!" on every row. */
+.msg-convo__edit-pencil--hint {
+    color: rgba(255, 255, 255, 0.15);
+    transition: color 0.12s;
+}
+.msg-convo:hover .msg-convo__edit-pencil--hint {
+    color: rgba(255, 255, 255, 0.45);
+}
+
+.msg-convo__edit-form {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+}
+.msg-convo__edit-input {
+    flex: 1;
+    min-width: 4rem;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.78rem;
+    background: rgba(0,0,0,0.3);
+    color: var(--text-primary, #ddd);
+    border: 1px solid rgba(80, 180, 255, 0.4);
+    border-radius: 3px;
+    outline: none;
+}
+.msg-convo__edit-input:focus {
+    border-color: rgba(80, 180, 255, 0.8);
+    background: rgba(0,0,0,0.5);
+}
+.msg-convo__edit-form button {
+    padding: 0.2rem 0.45rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 3px;
+    cursor: pointer;
+    background: rgba(255,255,255,0.05);
+    color: rgba(255,255,255,0.85);
+}
+.msg-convo__edit-form button:hover {
+    background: rgba(255,255,255,0.10);
+}
+.msg-convo__edit-save {
+    background: rgba(80, 180, 255, 0.20) !important;
+    color: rgba(180, 220, 255, 1) !important;
+    border-color: rgba(80, 180, 255, 0.45) !important;
+}
+.msg-convo__edit-save:hover {
+    background: rgba(80, 180, 255, 0.30) !important;
+}
+
 /* ── Chat area ──────────────────────────────────────────────────── */
 
 .msg-chat {
@@ -203,6 +274,7 @@
 
 .msg-chat__protocol-badge--mt { background: #3498db; color: #fff; }
 .msg-chat__protocol-badge--mc { background: #27ae60; color: #fff; }
+.msg-chat__protocol-badge--rns { background: #06b6d4; color: #fff; }
 
 .msg-chat__messages {
     flex: 1;

@@ -473,3 +473,406 @@
     .r-ident__row { flex-direction: column; align-items: stretch; gap: 0.25rem; }
     .r-ident__label { min-width: 0; }
 }
+
+/* ── Reticulum Messages card (Phase 2 #3) ────────────────────── */
+.rns-msgs {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+    min-height: 320px;
+    max-height: 520px;
+}
+.rns-msgs__list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.rns-msgs__list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.45rem 0.6rem;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.rns-msgs__list-title { font-weight: 600; }
+.rns-msgs__newbtn { padding: 0.2rem 0.55rem; font-size: 0.7rem; }
+.rns-msgs__convos { flex: 1; overflow-y: auto; }
+.rns-msgs__empty {
+    padding: 1rem;
+    text-align: center;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.45);
+}
+.rns-msgs__convo {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.rns-msgs__convo:hover { background: rgba(255,255,255,0.04); }
+.rns-msgs__convo--sel { background: rgba(80, 180, 255, 0.10); }
+.rns-msgs__convo-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.15rem;
+}
+.rns-msgs__convo-peer {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.72rem;
+}
+.rns-msgs__convo-time {
+    font-size: 0.65rem;
+    color: rgba(255,255,255,0.45);
+    white-space: nowrap;
+}
+.rns-msgs__convo-preview {
+    font-size: 0.74rem;
+    color: rgba(255,255,255,0.65);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.rns-msgs__convo-dir {
+    color: rgba(80, 180, 255, 0.75);
+    margin-right: 0.25rem;
+}
+.rns-msgs__thread {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.rns-msgs__thread-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.7rem;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.rns-msgs__thread-peer {
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.7);
+}
+.rns-msgs__thread-hash {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    color: rgba(80, 180, 255, 0.9);
+}
+.rns-msgs__thread-count {
+    font-size: 0.7rem;
+    color: rgba(255,255,255,0.45);
+}
+.rns-msgs__placeholder {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 1.5rem;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.8rem;
+}
+.rns-msgs__bubbles {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+.rns-msgs__bubble {
+    max-width: 75%;
+    padding: 0.45rem 0.65rem;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    line-height: 1.35;
+    word-wrap: break-word;
+}
+.rns-msgs__bubble--in {
+    align-self: flex-start;
+    background: rgba(255,255,255,0.07);
+}
+.rns-msgs__bubble--out {
+    align-self: flex-end;
+    background: rgba(80, 180, 255, 0.18);
+}
+.rns-msgs__bubble-title {
+    font-weight: 600;
+    font-size: 0.75rem;
+    margin-bottom: 0.2rem;
+    color: rgba(255,255,255,0.85);
+}
+.rns-msgs__bubble-body { white-space: pre-wrap; }
+.rns-msgs__bubble-meta {
+    margin-top: 0.25rem;
+    font-size: 0.62rem;
+    color: rgba(255,255,255,0.45);
+    text-align: right;
+}
+.rns-msgs__compose,
+.rns-msgs__newform {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.5rem 0.6rem;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.02);
+}
+.rns-msgs__body {
+    font-family: inherit;
+    resize: vertical;
+    min-height: 2.5rem;
+}
+.rns-msgs__newactions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+@media (max-width: 700px) {
+    .rns-msgs {
+        grid-template-columns: 1fr;
+        max-height: none;
+    }
+    .rns-msgs__list { max-height: 200px; }
+    .rns-msgs__thread { min-height: 280px; }
+    .rns-msgs__bubble { max-width: 90%; }
+}
+
+/* ── Peer class badges (Phase 1 #2) ──────────────────────────── */
+/* Compact uppercase pill rendered next to peer names in the
+   Channels card and Messages thread header. Color-coded by class
+   so an operator can spot at a glance which neighbors are
+   addressable LXMF correspondents vs. relays / transport-only. */
+.rns-class {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    margin-left: 0.35rem;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    vertical-align: middle;
+    line-height: 1.4;
+    border: 1px solid transparent;
+}
+.rns-class--lxmf {
+    background: rgba(80, 180, 255, 0.18);
+    color: rgba(160, 220, 255, 0.95);
+    border-color: rgba(80, 180, 255, 0.35);
+}
+.rns-class--propagation {
+    background: rgba(180, 120, 255, 0.18);
+    color: rgba(220, 180, 255, 0.95);
+    border-color: rgba(180, 120, 255, 0.35);
+}
+.rns-class--relay {
+    background: rgba(255, 200, 80, 0.18);
+    color: rgba(255, 220, 140, 0.95);
+    border-color: rgba(255, 200, 80, 0.35);
+}
+.rns-class--rns_service {
+    background: rgba(120, 200, 140, 0.18);
+    color: rgba(180, 230, 200, 0.95);
+    border-color: rgba(120, 200, 140, 0.35);
+}
+.rns-class--transport,
+.rns-class--unknown {
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.55);
+    border-color: rgba(255,255,255,0.10);
+}
+.rns-class__empty {
+    color: rgba(255,255,255,0.45);
+    font-style: italic;
+}
+
+/* Short-hash chip rendered after the display name in conversation
+   rows, so two devices with the same nickname can be told apart. */
+.rns-msgs__convo-hash {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.65rem;
+    color: rgba(255,255,255,0.4);
+    margin-left: 0.3rem;
+}
+
+/* ── Reticulum Stack Status card (Phase 1 #6b) ──────────────── */
+/* Live rnstatus panel: service lamps + per-interface field grid,
+   plus the Restart Stack action below. Reuses the existing
+   .r-card / .r-btn / .r-hint styles so it fits in visually with
+   the rest of the Reticulum cards on the Radio tab. */
+.rns-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin: 0.4rem 0 0.6rem;
+}
+.rns-stat__loading {
+    padding: 0.6rem;
+    text-align: center;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.45);
+    font-style: italic;
+}
+.rns-stat__svcrow {
+    display: flex;
+    gap: 1rem;
+    padding: 0.4rem 0.6rem;
+    background: rgba(255,255,255,0.03);
+    border-radius: 4px;
+    font-size: 0.78rem;
+}
+.rns-stat__svc { display: inline-flex; align-items: center; gap: 0.4rem; }
+.rns-stat__svc em { font-style: normal; color: rgba(255,255,255,0.55); }
+.rns-stat__lamp {
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+}
+.rns-stat__lamp--on  { background: rgba(80, 220, 140, 0.85); box-shadow: 0 0 4px rgba(80, 220, 140, 0.6); }
+.rns-stat__lamp--off { background: rgba(255, 100, 100, 0.55); }
+
+.rns-stat__ifaces {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.rns-stat__iface {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.rns-stat__iface-head {
+    background: rgba(80, 180, 255, 0.10);
+    padding: 0.3rem 0.6rem;
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.74rem;
+    color: rgba(180, 220, 255, 0.95);
+    border-bottom: 1px solid rgba(80, 180, 255, 0.18);
+}
+.rns-stat__field {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 0.5rem;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.74rem;
+}
+.rns-stat__field:nth-child(even) { background: rgba(255,255,255,0.02); }
+.rns-stat__field-key {
+    color: rgba(255,255,255,0.5);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.66rem;
+    align-self: center;
+}
+.rns-stat__field-val {
+    font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    color: rgba(255,255,255,0.85);
+}
+/* Restart button uses the warn variant if the existing system has
+   one; falls back to a soft red if not. */
+.r-btn--warn {
+    background: rgba(255, 140, 80, 0.18);
+    color: rgba(255, 200, 160, 0.95);
+    border: 1px solid rgba(255, 140, 80, 0.35);
+}
+.r-btn--warn:hover:not(:disabled) {
+    background: rgba(255, 140, 80, 0.28);
+    border-color: rgba(255, 140, 80, 0.55);
+}
+
+/* ── Address-book edit affordance on Channels card (Phase 1 #2b) ─── */
+/* Pencil icon next to a peer name. Operator-set names get a fully
+   opaque pencil; classifier-only (un-edited) names get a low-opacity
+   hint that becomes visible on row hover -- so the UI doesn't shout
+   "edit me!" at every row but the affordance is discoverable. */
+.rns-name-cell {
+    cursor: pointer;
+}
+.rns-edit-row { transition: background 0.1s; }
+.rns-edit-row:hover { background: rgba(255,255,255,0.03); }
+/* Phase 1 #5: LXMF rows are clickable to open the conversation
+   on the Messages tab. Cursor cue tells operators it's interactive.
+   Non-LXMF rows (transport/relay/propagation) stay default cursor
+   because messaging them is meaningless. */
+.rns-edit-row[data-class="lxmf"] { cursor: pointer; }
+.rns-edit-mark {
+    margin-left: 0.25rem;
+    color: rgba(80, 180, 255, 0.85);
+    font-size: 0.78em;
+    user-select: none;
+}
+.rns-edit-mark--hint {
+    color: rgba(255,255,255,0.15);
+    transition: color 0.12s;
+}
+.rns-edit-row:hover .rns-edit-mark--hint {
+    color: rgba(255,255,255,0.45);
+}
+.rns-name-text {
+    /* No underline-on-hover -- pencil is the affordance, not the name. */
+}
+.rns-edit-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+}
+.rns-edit-input {
+    flex: 1;
+    min-width: 4rem;
+    padding: 0.15rem 0.4rem;
+    font-size: 0.8rem;
+}
+.rns-edit-form .r-btn {
+    padding: 0.2rem 0.55rem;
+    font-size: 0.7rem;
+}
+
+/* Small clarifier text inside r-card labels (e.g. TX Enabled hint). */
+.r-card__hint {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.7rem;
+    font-weight: 400;
+    font-style: italic;
+    color: var(--text-muted, #8a96a3);
+}
+
+/* RNS Identity card — eye toggle for LXMF address privacy. */
+.r-ident__addr-wrap {
+    display: flex;
+    gap: 6px;
+    align-items: stretch;
+    flex: 1;
+}
+.r-ident__addr-wrap .r-input { flex: 1; }
+.r-ident__eye {
+    background: var(--surface-2, #1a2230);
+    border: 1px solid var(--border, #2a3441);
+    color: var(--text-muted, #8a96a3);
+    border-radius: 4px;
+    padding: 0 10px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    line-height: 1;
+    transition: color 120ms, border-color 120ms;
+}
+.r-ident__eye:hover { color: var(--accent-cyan, #06b6d4); }
+.r-ident__eye--on {
+    color: var(--accent-cyan, #06b6d4);
+    border-color: var(--accent-cyan, #06b6d4);
+}

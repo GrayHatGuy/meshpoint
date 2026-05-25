@@ -212,7 +212,9 @@ def _step_capture_source(config: dict, report: HardwareReport) -> None:
         print("        and re-run 'meshpoint setup'.")
         config["capture"] = {"sources": []}
 
-    _maybe_add_meshcore_usb(config, report)
+    # Ask about RNode first so its port is excluded from the MeshCore prompt.
+    claimed = _maybe_add_rnode_usb(config, report)
+    _maybe_add_meshcore_usb(config, report, already_claimed=claimed)
 
 
 def _step_api_key(config: dict, existing: dict | None = None) -> None:
@@ -329,9 +331,21 @@ def _step_relay(config: dict, report: HardwareReport) -> None:
     """Configure the optional SX1262 relay radio."""
     print("  [7/8] Relay radio (optional)")
 
-    capture_port = config.get("capture", {}).get("serial_port")
+    capture_cfg = config.get("capture", {})
+    capture_port = capture_cfg.get("serial_port")
+
+    # Exclude ports already assigned to RNode or MeshCore USB sources
+    usb_claimed: set[str] = set()
+    rnode_port = capture_cfg.get("rnode_usb", {}).get("serial_port")
+    meshcore_port = capture_cfg.get("meshcore_usb", {}).get("serial_port")
+    if rnode_port:
+        usb_claimed.add(rnode_port)
+    if meshcore_port:
+        usb_claimed.add(meshcore_port)
+
     available_ports = [
-        p for p in report.serial_ports if p != capture_port
+        p for p in report.serial_ports
+        if p != capture_port and p not in usb_claimed
     ]
 
     if not available_ports:
@@ -436,10 +450,25 @@ def _step_start_service() -> None:
     print()
 
 
-def _maybe_add_meshcore_usb(config: dict, report: HardwareReport) -> None:
+def _maybe_add_rnode_usb(config: dict, report: HardwareReport) -> set[str]:
+    """Delegate RNode USB setup to wizard_rnode; return claimed ports."""
+    from src.cli.wizard_rnode import maybe_add_rnode_usb
+    maybe_add_rnode_usb(config, report, _confirm, _choose_from_list)
+    rnode_port = config.get("capture", {}).get("rnode_usb", {}).get("serial_port")
+    return {rnode_port} if rnode_port else set()
+
+
+def _maybe_add_meshcore_usb(
+    config: dict,
+    report: HardwareReport,
+    already_claimed: set[str] | None = None,
+) -> None:
     """Delegate MeshCore USB setup to the wizard_meshcore module."""
     from src.cli.wizard_meshcore import maybe_add_meshcore_usb
-    maybe_add_meshcore_usb(config, report, _confirm, _choose_from_list)
+    maybe_add_meshcore_usb(
+        config, report, _confirm, _choose_from_list,
+        already_claimed=already_claimed,
+    )
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

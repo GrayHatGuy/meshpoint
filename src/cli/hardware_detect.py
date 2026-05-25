@@ -41,6 +41,7 @@ class HardwareReport:
     spi_devices: list[str] = field(default_factory=list)
     serial_ports: list[str] = field(default_factory=list)
     meshcore_usb_candidates: list[str] = field(default_factory=list)
+    rnode_usb_candidates: list[str] = field(default_factory=list)
     gps: GpsProbeResult = field(default_factory=GpsProbeResult)
     concentrator_available: bool = False
     libloragw_installed: bool = False
@@ -53,7 +54,11 @@ def detect_all() -> HardwareReport:
     report = HardwareReport()
     report.spi_devices = detect_spi_devices()
     report.serial_ports = detect_serial_ports()
-    report.meshcore_usb_candidates = detect_meshcore_usb_candidates()
+    # USB serial candidates — same ports offered to both MeshCore and RNode
+    # wizard steps; device type is determined interactively by the user.
+    usb_candidates = detect_usb_serial_candidates()
+    report.meshcore_usb_candidates = usb_candidates
+    report.rnode_usb_candidates = usb_candidates
     report.libloragw_installed = check_libloragw()
     report.concentrator_available = (
         len(report.spi_devices) > 0 and report.libloragw_installed
@@ -103,16 +108,22 @@ def detect_serial_ports() -> list[str]:
     return sorted(candidates)
 
 
-def detect_meshcore_usb_candidates() -> list[str]:
-    """Find USB serial ports that could be MeshCore devices.
+def detect_usb_serial_candidates() -> list[str]:
+    """Find USB serial ports that could be MeshCore or RNode devices.
 
-    Returns all ttyUSB/ttyACM ports.  Actual MeshCore verification
-    happens at runtime when the capture source connects.
+    Returns all ttyUSB/ttyACM ports.  Device type (MeshCore vs RNode)
+    is determined interactively during setup rather than by probing here,
+    so both wizard steps receive the same candidate list.
     """
     candidates = []
     for pattern in ["/dev/ttyUSB*", "/dev/ttyACM*"]:
         candidates.extend(glob.glob(pattern))
     return sorted(candidates)
+
+
+def detect_meshcore_usb_candidates() -> list[str]:
+    """Alias for detect_usb_serial_candidates -- preserved for compatibility."""
+    return detect_usb_serial_candidates()
 
 
 def check_libloragw() -> bool:
@@ -222,9 +233,9 @@ def print_report(report: HardwareReport) -> None:
         print("  Serial ports:    none found")
 
     if report.meshcore_usb_candidates:
-        print(f"  USB candidates:  {', '.join(report.meshcore_usb_candidates)}")
+        print(f"  USB candidates:  {', '.join(report.meshcore_usb_candidates)} (MeshCore / RNode)")
     else:
-        print("  USB candidates:  none (MeshCore USB auto-detect disabled)")
+        print("  USB candidates:  none detected")
 
     gps = report.gps
     if gps.available:

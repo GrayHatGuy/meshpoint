@@ -139,10 +139,13 @@ ANNOUNCE_SCRIPT     = Path("/opt/meshpoint/scripts/lxmf_announce.py")
 # rnodeusb: live OTA RNS packet stream. Every packet RNS Transport
 # receives is appended as a JSONL line here. The main meshpoint
 # service tails this file and inserts each packet into the packets
-# table + broadcasts a WS event for the Dashboard feed. Mode 0666 so
-# the meshpoint user (different login from the sidecar's `mp`) can
-# read+truncate it after consumption.
-RNS_PACKETS_JSONL   = Path("/opt/meshpoint/data/rns_packets.jsonl")
+# table + broadcasts a WS event for the Dashboard feed.
+#
+# Path lives in mp's home (~/.lxmd/) because /opt/meshpoint/data is
+# meshpoint-user-owned and mode 0755, denying the sidecar write
+# access. Mode 0666 on the file itself so the meshpoint user
+# (different login from the sidecar's `mp`) can read it.
+RNS_PACKETS_JSONL   = HOME / ".lxmd" / "rns_packets.jsonl"
 # Cap on JSONL file size before we rotate (truncate) to keep the
 # tail cheap. Main service drains continuously so the file is usually
 # tiny -- this is a backstop for the case where the meshpoint service
@@ -455,70 +458,81 @@ _RNS_PTYPE_LABEL = {
 }
 
 
-def _on_rns_packet(packet) -> None:
-    """RNS Transport packet callback.
+def _write_rns_packet_line(payload: dict) -> None:
+    """Append a single JSONL line to the RNS packets queue file.
 
-    Fires on every packet RNS receives -- announces, path requests,
-    link setups, encrypted data, proofs. Serialise the parsed fields
-    to a JSONL line; the meshpoint service tails the file and inserts
-    each as a row in the packets table.
-
-    Wrapped in a broad try/except because a single bad serialisation
-    must not break the RNS Transport callback chain (would silently
-    stop every callback registered after us).
+    Common path for both the announce-handler and any other future
+    RNS hook we register. Atomic-ish at the filesystem level since
+    each write is one open()+write()+close() with O_APPEND semantics.
     """
     try:
-        # destination_hash is bytes; render as hex for the queue and
-        # the dashboard. Transport ID only present on HEADER_2 frames.
-        dest = packet.destination_hash.hex() if getattr(packet, "destination_hash", None) else ""
-        transport_id = packet.transport_id.hex() if getattr(packet, "transport_id", None) else None
-
-        payload = {
-            "ts":                  __import__("time").time(),
-            "dest_hash":           dest,
-            "transport_id":        transport_id,
-            "header_type":         int(getattr(packet, "header_type", 0) or 0),
-            "packet_type":         int(getattr(packet, "packet_type", 0) or 0),
-            "packet_type_label":   _RNS_PTYPE_LABEL.get(
-                                       int(getattr(packet, "packet_type", 0) or 0),
-                                       "unknown",
-                                   ),
-            "destination_type":    int(getattr(packet, "destination_type", 0) or 0),
-            "transport_type":      int(getattr(packet, "transport_type", 0) or 0),
-            "context_flag":        bool(getattr(packet, "context_flag", False)),
-            "context":             int(getattr(packet, "context", 0) or 0),
-            "hops":                int(getattr(packet, "hops", 0) or 0),
-            "rssi":                getattr(packet, "rssi", None),
-            "snr":                 getattr(packet, "snr", None),
-            "raw_len":             len(packet.raw) if getattr(packet, "raw", None) else 0,
-        }
-        # Interface name (best-effort -- can be a string or an object).
-        iface = getattr(packet, "receiving_interface", None)
-        if iface is not None:
-            payload["interface"] = str(iface)
-
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
-
-        # Size-cap rotation: if the file grew past the cap (consumer
-        # offline?) truncate before appending. Keeps the tailer cheap
-        # and bounds disk use under pathological conditions.
         try:
             if RNS_PACKETS_JSONL.exists() and RNS_PACKETS_JSONL.stat().st_size > RNS_PACKETS_MAX_BYTES:
                 RNS_PACKETS_JSONL.write_text("")
                 os.chmod(RNS_PACKETS_JSONL, 0o666)
         except OSError:
             pass
-
         with RNS_PACKETS_JSONL.open("a", encoding="utf-8") as f:
             f.write(line)
-        # Make sure the consumer (meshpoint user) can read it. Idempotent
-        # chmod -- cheap, runs once per packet, no syscall storm.
         try:
             os.chmod(RNS_PACKETS_JSONL, 0o666)
         except OSError:
             pass
     except Exception as exc:  # noqa: BLE001
-        logger.debug("RNS packet callback serialisation failed: %s", exc)
+        logger.debug("RNS packet line write failed: %s", exc)
+
+
+class _RnsAnnounceHandler:
+    """RNS announce handler -- fires on every Transport-observed announce.
+
+    Registered via RNS.Transport.register_announce_handler(self). This is
+    the stable, documented hook present in all modern RNS releases (and
+    is what `rnsd --service` itself uses internally for the announce
+    cache).
+
+    Setting ``aspect_filter = None`` means we hear announces for ALL
+    aspects (lxmf, transport, propagation, anything). ``receive_path_responses
+    = True`` ensures path responses count too, which is the closest
+    thing to "saw an announce-like packet for this destination" outside
+    the actual broadcast.
+    """
+
+    aspect_filter = None
+    receive_path_responses = True
+
+    def received_announce(self, destination_hash, announced_identity, app_data):
+        try:
+            dest_hex = destination_hash.hex() if destination_hash else ""
+            # app_data is bytes (LXMF display name as UTF-8, or other
+            # aspect-specific blob); render a hex preview for diagnostics.
+            app_data_hex = (
+                app_data.hex() if isinstance(app_data, (bytes, bytearray))
+                else None
+            )
+            _write_rns_packet_line({
+                "ts":                  __import__("time").time(),
+                "dest_hash":           dest_hex,
+                "transport_id":        None,
+                "header_type":         0,
+                "packet_type":         1,     # ANNOUNCE
+                "packet_type_label":   _RNS_PTYPE_LABEL[1],
+                "destination_type":    0,
+                "transport_type":      0,
+                "context_flag":        False,
+                "context":             0,
+                "hops":                0,
+                "rssi":                None,
+                "snr":                 None,
+                "raw_len":             len(app_data) if app_data else 0,
+                "app_data_hex":        app_data_hex,
+                "source":              "announce_handler",
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("announce handler write failed: %s", exc)
+
+
+_announce_handler_singleton = _RnsAnnounceHandler()
 
 
 def _ensure_rns_attached() -> bool:
@@ -547,26 +561,93 @@ def _ensure_rns_attached() -> bool:
 
 
 def _register_packet_callback() -> None:
-    """Register _on_rns_packet with Transport (idempotent).
+    """Register RNS hooks for live OTA packet capture (idempotent).
 
-    Done once after we successfully attach to rnsd. Without this every
-    OTA RNS packet is invisible to the dashboard except via the slow
-    journal-parse path (which only catches announces, not link/data
-    /proof). With it, every packet RNS Transport sees -- including
-    encrypted data and path requests -- streams into the dashboard.
+    Done once after we successfully attach to rnsd. RNS doesn't expose
+    a single "every packet" callback in the public API, so we register
+    every hook the installed version supports and fall back gracefully:
+
+      1. ``Transport.register_packet_callback`` -- newest hook;
+         catches every packet Transport processes. Available in
+         RNS dev builds; not in 0.7.x stable.
+      2. ``Transport.register_announce_handler`` -- stable since
+         RNS 0.1; catches every announce (the highest-volume
+         visible packet type on most meshes).
+
+    Whatever's available gets registered; the rest log at debug. The
+    file-tailer on the meshpoint-service side doesn't care which hook
+    produced the line.
     """
     global _packet_cb_registered
     if _packet_cb_registered:
         return
-    try:
-        RNS.Transport.register_packet_callback(_on_rns_packet)
+
+    registered_any = False
+
+    # Hook 1: full packet callback (preferred, newest)
+    cb_register = getattr(RNS.Transport, "register_packet_callback", None)
+    if callable(cb_register):
+        try:
+            cb_register(_on_rns_packet)
+            logger.info("RNS Transport packet callback registered")
+            registered_any = True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("register_packet_callback failed: %s", exc)
+
+    # Hook 2: announce handler (always present)
+    ah_register = getattr(RNS.Transport, "register_announce_handler", None)
+    if callable(ah_register):
+        try:
+            ah_register(_announce_handler_singleton)
+            logger.info(
+                "RNS announce handler registered (queue: %s)",
+                RNS_PACKETS_JSONL,
+            )
+            registered_any = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("register_announce_handler failed: %s", exc)
+
+    if registered_any:
         _packet_cb_registered = True
-        logger.info(
-            "RNS Transport packet callback registered (queue: %s)",
-            RNS_PACKETS_JSONL,
+    else:
+        logger.warning(
+            "No RNS packet hooks could be registered -- live RNS "
+            "packet feed will be empty (announces still surface via "
+            "the journal-parse fallback in nodes.py)."
         )
+
+
+# Optional: full-packet callback if RNS version supports it. Kept
+# alongside the announce handler because if both are registered, the
+# packet callback fires on EVERYTHING (data/link/proof too) while the
+# announce handler only fires on announces. Together they give us the
+# best coverage the installed RNS exposes.
+def _on_rns_packet(packet) -> None:
+    try:
+        dest = packet.destination_hash.hex() if getattr(packet, "destination_hash", None) else ""
+        transport_id = packet.transport_id.hex() if getattr(packet, "transport_id", None) else None
+        ptype = int(getattr(packet, "packet_type", 0) or 0)
+        iface = getattr(packet, "receiving_interface", None)
+        _write_rns_packet_line({
+            "ts":                  __import__("time").time(),
+            "dest_hash":           dest,
+            "transport_id":        transport_id,
+            "header_type":         int(getattr(packet, "header_type", 0) or 0),
+            "packet_type":         ptype,
+            "packet_type_label":   _RNS_PTYPE_LABEL.get(ptype, "unknown"),
+            "destination_type":    int(getattr(packet, "destination_type", 0) or 0),
+            "transport_type":      int(getattr(packet, "transport_type", 0) or 0),
+            "context_flag":        bool(getattr(packet, "context_flag", False)),
+            "context":             int(getattr(packet, "context", 0) or 0),
+            "hops":                int(getattr(packet, "hops", 0) or 0),
+            "rssi":                getattr(packet, "rssi", None),
+            "snr":                 getattr(packet, "snr", None),
+            "raw_len":             len(packet.raw) if getattr(packet, "raw", None) else 0,
+            "interface":           str(iface) if iface is not None else None,
+            "source":              "packet_callback",
+        })
     except Exception as exc:  # noqa: BLE001
-        logger.warning("could not register RNS packet callback: %s", exc)
+        logger.debug("packet callback serialisation failed: %s", exc)
 
 
 def enrich_peers() -> int:

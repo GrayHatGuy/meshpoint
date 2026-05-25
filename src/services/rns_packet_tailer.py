@@ -49,8 +49,11 @@ from src.storage.packet_repository import PacketRepository
 logger = logging.getLogger(__name__)
 
 
-# Queue file written by scripts/lxmf_inbox_dump.py.
-RNS_PACKETS_JSONL = Path("/opt/meshpoint/data/rns_packets.jsonl")
+# Queue file written by scripts/lxmf_inbox_dump.py. Lives in mp's
+# home (the sidecar runs as `mp`) because /opt/meshpoint/data is
+# meshpoint-user-owned and not mp-writable. File mode is 0666 so
+# the meshpoint service can read it.
+RNS_PACKETS_JSONL = Path("/home/mp/.lxmd/rns_packets.jsonl")
 
 # Cadence between file-size polls when there's nothing new. Short
 # enough that LXMF DMs feel live; long enough that we don't burn CPU

@@ -102,9 +102,22 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         _init_routes(
             pipeline, config, identity, auth_subsystem, tx_service, message_repo
         )
+
+        # rnodeusb: tail the sidecar's RNS packet JSONL queue and
+        # broadcast each line as a 'packet' WS event so the Dashboard
+        # Packets feed sees live RNS activity. Sub-second latency,
+        # complements the polling backfill in nodes.py.
+        from src.services.rns_packet_tailer import RnsPacketTailer
+        rns_tailer = RnsPacketTailer(
+            packet_repo=pipeline.packet_repo,
+            ws_manager=ws_manager,
+        )
+        await rns_tailer.start()
+
         print_banner(config)
         logger.info("Meshpoint started -- listening for packets")
         yield
+        await rns_tailer.stop()
         if nodeinfo_broadcaster is not None:
             await nodeinfo_broadcaster.stop()
         await upstream.stop()

@@ -136,6 +136,19 @@ PEERS_JSON         = HOME / ".lxmd" / "lxmf_peers.json"
 ANNOUNCE_STATE_JSON = Path("/opt/meshpoint/data/lxmf_announce.json")
 ANNOUNCE_SCRIPT     = Path("/opt/meshpoint/scripts/lxmf_announce.py")
 
+# rnodeusb: live OTA RNS packet stream. Every packet RNS Transport
+# receives is appended as a JSONL line here. The main meshpoint
+# service tails this file and inserts each packet into the packets
+# table + broadcasts a WS event for the Dashboard feed. Mode 0666 so
+# the meshpoint user (different login from the sidecar's `mp`) can
+# read+truncate it after consumption.
+RNS_PACKETS_JSONL   = Path("/opt/meshpoint/data/rns_packets.jsonl")
+# Cap on JSONL file size before we rotate (truncate) to keep the
+# tail cheap. Main service drains continuously so the file is usually
+# tiny -- this is a backstop for the case where the meshpoint service
+# is down and the sidecar keeps appending.
+RNS_PACKETS_MAX_BYTES = 10 * 1024 * 1024   # 10 MB
+
 # How often the peer enricher runs. 60s is a good balance: announces
 # don't change minute-to-minute, but waiting 5+ minutes would mean
 # operators see stale class/display-name data after a new peer arrives.
@@ -428,6 +441,84 @@ def _collect_candidate_hashes() -> list:
 
 
 _rns_attached = False
+_packet_cb_registered = False
+
+
+# rnodeusb: human-readable label for each Reticulum packet_type value.
+# Matches the bit-mask layout documented in src/decode/rnode_decoder.py
+# (bits 1-0 of the flags byte).
+_RNS_PTYPE_LABEL = {
+    0: "data",          # encrypted application/link data
+    1: "announce",      # identity advertisement
+    2: "link_request",  # request to establish an RNS link
+    3: "proof",         # cryptographic proof / delivery confirmation
+}
+
+
+def _on_rns_packet(packet) -> None:
+    """RNS Transport packet callback.
+
+    Fires on every packet RNS receives -- announces, path requests,
+    link setups, encrypted data, proofs. Serialise the parsed fields
+    to a JSONL line; the meshpoint service tails the file and inserts
+    each as a row in the packets table.
+
+    Wrapped in a broad try/except because a single bad serialisation
+    must not break the RNS Transport callback chain (would silently
+    stop every callback registered after us).
+    """
+    try:
+        # destination_hash is bytes; render as hex for the queue and
+        # the dashboard. Transport ID only present on HEADER_2 frames.
+        dest = packet.destination_hash.hex() if getattr(packet, "destination_hash", None) else ""
+        transport_id = packet.transport_id.hex() if getattr(packet, "transport_id", None) else None
+
+        payload = {
+            "ts":                  __import__("time").time(),
+            "dest_hash":           dest,
+            "transport_id":        transport_id,
+            "header_type":         int(getattr(packet, "header_type", 0) or 0),
+            "packet_type":         int(getattr(packet, "packet_type", 0) or 0),
+            "packet_type_label":   _RNS_PTYPE_LABEL.get(
+                                       int(getattr(packet, "packet_type", 0) or 0),
+                                       "unknown",
+                                   ),
+            "destination_type":    int(getattr(packet, "destination_type", 0) or 0),
+            "transport_type":      int(getattr(packet, "transport_type", 0) or 0),
+            "context_flag":        bool(getattr(packet, "context_flag", False)),
+            "context":             int(getattr(packet, "context", 0) or 0),
+            "hops":                int(getattr(packet, "hops", 0) or 0),
+            "rssi":                getattr(packet, "rssi", None),
+            "snr":                 getattr(packet, "snr", None),
+            "raw_len":             len(packet.raw) if getattr(packet, "raw", None) else 0,
+        }
+        # Interface name (best-effort -- can be a string or an object).
+        iface = getattr(packet, "receiving_interface", None)
+        if iface is not None:
+            payload["interface"] = str(iface)
+
+        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+        # Size-cap rotation: if the file grew past the cap (consumer
+        # offline?) truncate before appending. Keeps the tailer cheap
+        # and bounds disk use under pathological conditions.
+        try:
+            if RNS_PACKETS_JSONL.exists() and RNS_PACKETS_JSONL.stat().st_size > RNS_PACKETS_MAX_BYTES:
+                RNS_PACKETS_JSONL.write_text("")
+                os.chmod(RNS_PACKETS_JSONL, 0o666)
+        except OSError:
+            pass
+
+        with RNS_PACKETS_JSONL.open("a", encoding="utf-8") as f:
+            f.write(line)
+        # Make sure the consumer (meshpoint user) can read it. Idempotent
+        # chmod -- cheap, runs once per packet, no syscall storm.
+        try:
+            os.chmod(RNS_PACKETS_JSONL, 0o666)
+        except OSError:
+            pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("RNS packet callback serialisation failed: %s", exc)
 
 
 def _ensure_rns_attached() -> bool:
@@ -448,10 +539,34 @@ def _ensure_rns_attached() -> bool:
         # local socket and piggybacks on it (no second radio).
         RNS.Reticulum(loglevel=0)
         _rns_attached = True
+        _register_packet_callback()
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("could not attach to RNS for enrichment: %s", exc)
         return False
+
+
+def _register_packet_callback() -> None:
+    """Register _on_rns_packet with Transport (idempotent).
+
+    Done once after we successfully attach to rnsd. Without this every
+    OTA RNS packet is invisible to the dashboard except via the slow
+    journal-parse path (which only catches announces, not link/data
+    /proof). With it, every packet RNS Transport sees -- including
+    encrypted data and path requests -- streams into the dashboard.
+    """
+    global _packet_cb_registered
+    if _packet_cb_registered:
+        return
+    try:
+        RNS.Transport.register_packet_callback(_on_rns_packet)
+        _packet_cb_registered = True
+        logger.info(
+            "RNS Transport packet callback registered (queue: %s)",
+            RNS_PACKETS_JSONL,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not register RNS packet callback: %s", exc)
 
 
 def enrich_peers() -> int:

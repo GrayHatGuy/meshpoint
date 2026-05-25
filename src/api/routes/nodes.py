@@ -284,9 +284,17 @@ async def _sync_lxmf_to_packets() -> None:
 async def list_nodes(limit: int = 500, enrich: bool = True):
     # Sync LXMF peers + announces into the DB before reading nodes so
     # the Dashboard panels (Nodes + Packets) see current RNS activity.
-    # Cheap; idempotent thanks to dedup sets.
-    await _sync_lxmf_peers_to_nodes()
-    await _sync_lxmf_to_packets()
+    # Wrapped defensively -- a sidecar JSON glitch or rnsd journal
+    # parse failure must NEVER prevent the nodes list from rendering.
+    try:
+        await _sync_lxmf_peers_to_nodes()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LXMF peer sync skipped: %s", exc, exc_info=True)
+    try:
+        await _sync_lxmf_to_packets()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LXMF packet sync skipped: %s", exc, exc_info=True)
+
     if enrich:
         nodes = await _node_repo.get_all_with_signal(limit)
     else:

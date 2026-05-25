@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
 from src.analytics.network_mapper import NetworkMapper
 from src.api.routes.reticulum import (
+    _INBOX_JSON,
+    _PEERS_JSON,
     get_recent_announces_map,
     read_contacts,
     read_peers_enrichment,
     resolve_display_name,
 )
+from src.models.node import Node
 from src.storage.node_repository import NodeRepository
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
@@ -80,8 +90,83 @@ def _enrich_reticulum_nodes(nodes: list) -> list:
     return nodes
 
 
+async def _sync_lxmf_peers_to_nodes() -> None:
+    """Upsert RNS peers from the sidecar's JSON files into the nodes table.
+
+    On the rnodeusb branch the SX1302 no longer captures Reticulum
+    packets, so RNS peers never get into the `nodes` table via the
+    normal packet → decoder → upsert pipeline. Without this sync, the
+    Dashboard Nodes panel shows only stale RNS entries (or none at
+    all) even while LXMF messaging works fine via the RNode USB stick
+    and the sidecar.
+
+    Strategy: read lxmf_peers.json (display names, classes) and
+    inbox.json (per-peer last-message timestamp), then upsert each
+    peer into nodes. `last_heard` derives from the most recent inbox
+    message for that peer; falls back to peers.json's `generated_at`
+    if the peer has no inbox messages yet (e.g. seen via announce
+    only). Idempotent — safe to call on every /api/nodes request.
+    """
+    if _node_repo is None:
+        return
+    # Pull peer classification (display name, peer_class) from sidecar.
+    enrich = read_peers_enrichment()
+    if not enrich:
+        return
+    # Pull per-peer last-message timestamp from inbox.json (best-effort).
+    last_seen_by_peer: dict[str, datetime] = {}
+    try:
+        with _INBOX_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        for m in payload.get("messages", []):
+            peer = m.get("peer_hash") or ""
+            ts = m.get("timestamp")
+            if not peer or ts is None:
+                continue
+            try:
+                when = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            cur = last_seen_by_peer.get(peer)
+            if cur is None or when > cur:
+                last_seen_by_peer[peer] = when
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("inbox.json read failed during peer sync: %s", exc)
+    # Global fallback timestamp from peers.json header.
+    fallback_ts = datetime.now(timezone.utc)
+    try:
+        with _PEERS_JSON.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        gen_at = payload.get("generated_at")
+        if gen_at:
+            fallback_ts = datetime.fromisoformat(gen_at)
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    # Upsert each peer. Only fills display_name when the sidecar
+    # classifier produced a real one (not just the raw hash placeholder).
+    for peer_hash, meta in enrich.items():
+        display_name = meta.get("display_name") or None
+        if display_name and display_name.startswith("!"):
+            display_name = None  # placeholder, leave long_name NULL
+        last_heard = last_seen_by_peer.get(peer_hash, fallback_ts)
+        try:
+            await _node_repo.upsert(Node(
+                node_id=peer_hash,
+                long_name=display_name,
+                protocol="reticulum",
+                last_heard=last_heard,
+                first_seen=last_heard,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("RNS peer upsert failed for %s: %s", peer_hash, exc)
+
+
 @router.get("")
 async def list_nodes(limit: int = 500, enrich: bool = True):
+    # Sync LXMF peers before reading nodes so the Dashboard panel sees
+    # current RNS activity. Cheap (handful of peers, single transaction)
+    # and idempotent.
+    await _sync_lxmf_peers_to_nodes()
     if enrich:
         nodes = await _node_repo.get_all_with_signal(limit)
     else:

@@ -270,18 +270,30 @@ function _setupTabs() {
             const target = document.getElementById(`tab-${tabId}`);
             if (target) target.classList.add('tab-content--active');
 
-            if (tabId === 'messages' && window.messagingPanel) {
-                window.messagingPanel.onActivated();
-                window.messagingPanel.resetUnreadBadge();
-            }
-            if (tabId === 'radio' && window.radioSettings) {
-                window.radioSettings.onActivated();
-            }
-            if (tabId === 'stats' && window.statsTab) {
-                window.statsTab.refresh();
-            }
+            _activateTabSubsystem(tabId);
         });
     });
+    // If a tab is already active at page load (CSS class or default),
+    // its click handler was never fired — so manually trigger the
+    // subsystem activation for whichever tab is currently active.
+    // Without this, opening the page directly on the Messages tab
+    // leaves MessagingPanel.init() uncalled and the panel renders
+    // empty until the user switches tabs and back.
+    const activeBtn = document.querySelector('.tab-bar__btn--active');
+    if (activeBtn) _activateTabSubsystem(activeBtn.dataset.tab);
+}
+
+function _activateTabSubsystem(tabId) {
+    if (tabId === 'messages' && window.messagingPanel) {
+        window.messagingPanel.onActivated();
+        window.messagingPanel.resetUnreadBadge();
+    }
+    if (tabId === 'radio' && window.radioSettings) {
+        window.radioSettings.onActivated();
+    }
+    if (tabId === 'stats' && window.statsTab) {
+        window.statsTab.refresh();
+    }
 }
 
 function _setText(id, value) {

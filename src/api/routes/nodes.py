@@ -18,6 +18,7 @@ from src.api.routes.reticulum import (
     read_peers_enrichment,
     resolve_display_name,
 )
+from src.api.websocket_manager import WebSocketManager
 from src.models.node import Node
 from src.models.packet import Packet, PacketType, Protocol
 from src.models.signal import SignalMetrics
@@ -31,6 +32,7 @@ router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 _node_repo: NodeRepository | None = None
 _network_mapper: NetworkMapper | None = None
 _packet_repo: PacketRepository | None = None
+_ws_manager: WebSocketManager | None = None
 
 # Dedup state for synthetic RNS packet injection — populated on first
 # /api/nodes call after restart; bounded by inbox/journal contents.
@@ -42,11 +44,13 @@ def init_routes(
     node_repo: NodeRepository,
     network_mapper: NetworkMapper,
     packet_repo: PacketRepository | None = None,
+    ws_manager: WebSocketManager | None = None,
 ) -> None:
-    global _node_repo, _network_mapper, _packet_repo
+    global _node_repo, _network_mapper, _packet_repo, _ws_manager
     _node_repo = node_repo
     _network_mapper = network_mapper
     _packet_repo = packet_repo
+    _ws_manager = ws_manager
 
 
 def _enrich_reticulum_nodes(nodes: list) -> list:
@@ -226,18 +230,25 @@ async def _sync_lxmf_to_packets() -> None:
             else:
                 source_id, dest_id = "self", peer
 
+            pkt = Packet(
+                packet_id=msg_hash[:16],
+                source_id=source_id,
+                destination_id=dest_id,
+                protocol=Protocol.RETICULUM,
+                packet_type=PacketType.TEXT,
+                timestamp=ts,
+                capture_source="lxmf_sidecar",
+            )
             try:
-                await _packet_repo.insert(Packet(
-                    packet_id=msg_hash[:16],
-                    source_id=source_id,
-                    destination_id=dest_id,
-                    protocol=Protocol.RETICULUM,
-                    packet_type=PacketType.TEXT,
-                    timestamp=ts,
-                    capture_source="lxmf_sidecar",
-                ))
+                await _packet_repo.insert(pkt)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("LXMF -> packets insert failed: %s", exc)
+                continue
+            if _ws_manager is not None:
+                try:
+                    await _ws_manager.broadcast("packet", pkt.to_dict())
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("LXMF -> packet WS broadcast failed: %s", exc)
     except (OSError, json.JSONDecodeError) as exc:
         logger.debug("inbox.json sync skipped: %s", exc)
 
@@ -270,20 +281,27 @@ async def _sync_lxmf_to_packets() -> None:
             bandwidth_khz=125.0,
         )
 
+        pkt = Packet(
+            packet_id=hashlib.sha256(key.encode()).hexdigest()[:16],
+            source_id=ann_hash,
+            destination_id=ann_hash,  # announces are self-addressed
+            protocol=Protocol.RETICULUM,
+            packet_type=PacketType.NODEINFO,
+            hop_limit=int(ann.get("hops") or 0),
+            timestamp=ts,
+            signal=signal,
+            capture_source="rnsd_announce",
+        )
         try:
-            await _packet_repo.insert(Packet(
-                packet_id=hashlib.sha256(key.encode()).hexdigest()[:16],
-                source_id=ann_hash,
-                destination_id=ann_hash,  # announces are self-addressed
-                protocol=Protocol.RETICULUM,
-                packet_type=PacketType.NODEINFO,
-                hop_limit=int(ann.get("hops") or 0),
-                timestamp=ts,
-                signal=signal,
-                capture_source="rnsd_announce",
-            ))
+            await _packet_repo.insert(pkt)
         except Exception as exc:  # noqa: BLE001
             logger.debug("RNS announce -> packets insert failed: %s", exc)
+            continue
+        if _ws_manager is not None:
+            try:
+                await _ws_manager.broadcast("packet", pkt.to_dict())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("RNS announce WS broadcast failed: %s", exc)
 
 
 @router.get("")
